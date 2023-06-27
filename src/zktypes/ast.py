@@ -70,6 +70,7 @@ class AExpr:
     """Arithmetic Expression"""
 
     e: Const | Var | Sum | Mul | Neg | Pow
+    type: Optional[Type] = None
 
     def type_id(self: AExpr) -> int:
         match self.e:
@@ -465,7 +466,7 @@ class Cond:
                 if cond.eval(var_eval):
                     return true_e.verify(var_eval)
                 else:
-                    True
+                    return True
             case IfElse(cond, true_e, false_e):
                 if cond.eval(var_eval):
                     return true_e.verify(var_eval)
@@ -473,7 +474,6 @@ class Cond:
                     return false_e.verify(var_eval)
             case Switch(_, _):
                 raise NotImplementedError
-        return False # TODO: This should be unreachable
 
 
 def to_aexpr(v: ToAExpr) -> AExpr:
@@ -490,11 +490,36 @@ def to_aexpr(v: ToAExpr) -> AExpr:
         raise ValueError(f"type `{type(v)}` is not ToAExpr")
 
 
+class StaticBound:
+    """Bound an expression between [interval[0], interval[1]]"""
+    interval: Tuple[F, F]
+
+    def __init__(self, start: int | F, end: int | F):
+        if isinstance(start, int):
+            start = F(start)
+        if isinstance(end, int):
+            end = F(end)
+        self.interval = (start, end)
+
+
+@dataclass
+class Type:
+    name: str
+    t: StaticBound
+
+    @classmethod
+    def Bound(cls, start: int | F, end: int | F, name: Optional[str] = None):
+        if name is None:
+            name = varname()
+        return cls(name, StaticBound(start, end))
+
+
 @dataclass
 class Signal:
     name: str
     fullname: str
     frame: inspect.FrameInfo
+    type: Optional[Type] = None
 
     def fmt_ascii(self) -> str:
         return self.name
@@ -536,10 +561,10 @@ class Component:
         self.children.append(sub_component)
         return sub_component
 
-    def Signal(self, name: Optional[str] = None) -> AExpr:
+    def Signal(self, name: Optional[str] = None, type: Optional[Type] = None) -> AExpr:
         if name is None:
             name = varname()
-        signal = Signal(name, f"{self.fullname}.{name}", inspect.stack()[1])
+        signal = Signal(name, f"{self.fullname}.{name}", inspect.stack()[1], type)
         self.signals.append(signal)
         id = len(self.signals) - 1
         self.signal_ids.append(id)
@@ -560,35 +585,6 @@ class Component:
         fn(self)
         for child in self.children:
             child.walk(fn)
-
-
-def IsZero(x: Component, value: AExpr) -> LExpr:
-    x = x.sub("isZero")
-    value_inv = x.Signal()
-    is_zero = ~(value * value_inv == 1)
-    x.Assert((value == 0) | ~is_zero)
-    return is_zero
-
-
-class Word:
-    lo: AExpr
-    hi: AExpr
-
-    def __init__(self, x: Component, name: Optional[str] = None):
-        if not name:
-            name = varname()
-        self.lo = x.Signal(f"{name}.lo")
-        self.hi = x.Signal(f"{name}.hi")
-
-
-def Add256(x: Component, a: Word, b: Word) -> Tuple[Word, AExpr]:
-    x = x.sub("add256")
-    res = Word(x)
-    carry_lo = x.Signal()
-    carry_hi = x.Signal()
-    x.Assert(a.lo + b.lo == res.lo + carry_lo * 2**128)
-    x.Assert(a.hi + b.hi + carry_lo == res.hi + carry_hi * 2**128)
-    return (res, carry_hi)
 
 
 def main():

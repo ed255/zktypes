@@ -1,10 +1,18 @@
+from functools import reduce
 # Needed to annotate with a type that hasn't been defined yet.
 from __future__ import annotations
-from dataclasses import dataclass
+from varname import varname  # type: ignore
+from dataclasses import dataclass, field
 from py_ecc import bn128
-from typing import List, Union
+from typing import List, Union, Optional, Callable, Any, Self, TypeVar, Generic, Tuple
+from typing_extensions import Protocol
+import inspect
 
 F = bn128.FQ
+
+
+class SupportsFmtAscii(Protocol):
+    def fmt_ascii(self) -> str: ...
 
 
 @dataclass
@@ -14,7 +22,14 @@ class Const():
 
 @dataclass
 class Var():
-    v: str
+    v: SupportsFmtAscii | str
+
+    def fmt_ascii(self) -> str:
+        if isinstance(self.v, str):
+            return self.v
+        else:
+            return self.v.fmt_ascii()
+
 
 
 @dataclass
@@ -61,7 +76,7 @@ class AExpr():
     def __neg__(self: AExpr) -> AExpr:
         match self.e:
             case Neg(e):
-                return AExpr(e)
+                return e
             case _:
                 return AExpr(Neg(self))
 
@@ -111,6 +126,35 @@ class AExpr():
             case _:
                 return AExpr(Mul([a, b]))
 
+    def __req__(b: ToAExpr, a: ToAExpr) -> LExpr:
+        return AExpr.__eq__(a, b)
+
+    def __eq__(a: ToAExpr, b: ToAExpr) -> LExpr:  # type: ignore
+        (a, b) = (to_aexpr(a), to_aexpr(b))
+        return LExpr(Eq(AExprPair(a, b)))
+
+    def __rne__(b: ToAExpr, a: ToAExpr) -> LExpr:
+        return AExpr.__ne__(a, b)
+
+    def __ne__(a: ToAExpr, b: ToAExpr) -> LExpr:  # type: ignore
+        (a, b) = (to_aexpr(a), to_aexpr(b))
+        return LExpr(Neq(AExprPair(a, b)))
+
+    def eval(self, var_eval: Callable[[Any], F]) -> F:
+        match self.e:
+            case Neg(e):
+                return -e.eval(var_eval)
+            case Pow(e, p):
+                return e.eval(var_eval)**p
+            case Const(c):
+                return c
+            case Var(v):
+                return var_eval(v)
+            case Sum(es):
+                return sum([e.eval(var_eval) for e in es], start = F(0))
+            case Mul(es):
+                return reduce(lambda x, y: x * y, [e.eval(var_eval) for e in es], F(1))
+
     def is_terminal(self: AExpr) -> bool:
         match self.e:
             case Const(_) | Var(_) | Pow(_, _):
@@ -142,10 +186,15 @@ class AExpr():
             case Pow(e, p):
                 return fmt_exp(e) + f'^{p}'
             case Const(c):
-                # TODO: power of two as 2^x, long numbers as hex
-                return f'{c}'
-            case Var(v):
-                return v
+                c_bin = bin(c.n)[2:]
+                if len(c_bin) >= 8 and c_bin.count('1') == 1:
+                    return f'2^{len(c_bin)-1}'
+                elif len(c_bin) >= 16:
+                    return f'0x{c.n:02x}'
+                else:
+                    return f'{c}'
+            case Var(_) as e:
+                return e.fmt_ascii()
             case Sum(es):
                 result = ''
                 for i, e in enumerate(es):
@@ -181,9 +230,15 @@ ToAExpr = AExpr | str | int | F
 
 
 @dataclass
-class Comp():
-    """Comparison between pair of nodes for equality/inequality"""
-    pair: (LExpr, LExpr) | (AExpr, AExpr)
+class AExprPair():
+    lhs: AExpr
+    rhs: AExpr
+
+
+@dataclass
+class LExprPair():
+    lhs: LExpr
+    rhs: LExpr
 
 
 @dataclass
@@ -203,12 +258,12 @@ class Not():
 
 @dataclass
 class Eq():
-    c: Comp
+    pair: AExprPair | LExprPair
 
 
 @dataclass
 class Neq():
-    c: Comp
+    pair: AExprPair | LExprPair
 
 
 @dataclass
@@ -216,10 +271,91 @@ class LExpr():
     """Logical Expression"""
     e: And | Or | Not | Eq | Neq
 
+    def __eq__(a: LExpr, b: LExpr) -> LExpr:  # type: ignore
+        """called with `==`"""
+        return LExpr(Eq(LExprPair(a, b)))
+
+    def __ne__(a: LExpr, b: LExpr) -> LExpr:  # type: ignore
+        """called with `!=`"""
+        return LExpr(Neq(LExprPair(a, b)))
+
+    def __invert__(self: LExpr) -> LExpr:
+        """not.  Called with `~`"""
+        return LExpr(Not(self))
+
+    def __and__(a: LExpr, b: LExpr) -> LExpr:
+        """Called with `&`"""
+        match (a.e, b.e):
+            case (And(es), _):
+                es = es + [b]
+                return LExpr(And(es))
+            case (_, And(es)):
+                es = es + [b]
+                return LExpr(And(es))
+            case _:
+                return LExpr(And([a, b]))
+
+    def __or__(a: LExpr, b: LExpr) -> LExpr:
+        """Called with `|`"""
+        match (a.e, b.e):
+            case (Or(es), _):
+                es = es + [b]
+                return LExpr(Or(es))
+            case (_, Or(es)):
+                es = es + [b]
+                return LExpr(Or(es))
+            case _:
+                return LExpr(Or([a, b]))
+
+    def is_terminal(self: LExpr) -> bool:
+        match self.e:
+            case Not(_):
+                return True
+            case _:
+                return False
+
+    def fmt_ascii(self: LExpr) -> str:
+        def fmt_exp(e: LExpr) -> str:
+            parens = not e.is_terminal()
+            result = ''
+            if parens:
+                result += '('
+            result += e.fmt_ascii()
+            if parens:
+                result += ')'
+            return result
+        match self.e:
+            case And(es):
+                return ' and '.join([fmt_exp(e) for e in es])
+            case Or(es):
+                return ' or '.join([fmt_exp(e) for e in es])
+            case Not(e):
+                return 'not(' + fmt_exp(e) + ')'
+            case Eq(pair):
+                match pair:
+                    case AExprPair(lhs, rhs):
+                        return lhs.fmt_ascii() + ' == ' + rhs.fmt_ascii()
+                    case LExprPair(lhs, rhs):
+                        return fmt_exp(lhs) + ' == ' + fmt_exp(rhs)
+            case Neq(pair):
+                match pair:
+                    case AExprPair(lhs, rhs):
+                        return lhs.fmt_ascii() + ' != ' + rhs.fmt_ascii()
+                    case LExprPair(lhs, rhs):
+                        return fmt_exp(lhs) + ' != ' + fmt_exp(rhs)
+
+    def __str__(self: LExpr) -> str:
+        return self.fmt_ascii()
+
 
 @dataclass
 class Assert():
     s: Cond | LExpr
+    frame: Optional[inspect.FrameInfo] = None
+
+    def __str__(self: Assert) -> str:
+        return self.s.__str__()
+
 
 
 @dataclass
@@ -246,6 +382,36 @@ class Cond():
     """Condition"""
     c: If | IfElse | Switch
 
+    def fmt_ascii(self: Cond, indent: int) -> List[str]:
+        def spaces(indent: int) -> str:
+            return ' ' * 2 * indent
+
+        def fmt_assert(a: Assert, indent: int) -> List[str]:
+            lines = []
+            match a.s:
+                case Cond(_) as c:
+                    lines += c.fmt_ascii(indent)
+                case LExpr(_) as e:
+                    lines.append(spaces(indent) + e.fmt_ascii())
+            return lines
+
+        lines = []
+        match self.c:
+            case If(cond, true_e):
+                lines.append('if ' + cond.fmt_ascii() + ':')
+                lines += fmt_assert(true_e, 1)
+            case IfElse(cond, true_e, false_e):
+                lines.append('if ' + cond.fmt_ascii() + ':')
+                lines += fmt_assert(true_e, 1)
+                lines.append('else:')
+                lines += fmt_assert(false_e, 1)
+            case Switch(_, _):
+                raise NotImplementedError
+        return [spaces(indent) + line for line in lines]
+
+    def __str__(self: Cond) -> str:
+        return '\n'.join(self.fmt_ascii(0))
+
 
 def to_aexpr(v: ToAExpr) -> AExpr:
     if isinstance(v, AExpr):
@@ -261,7 +427,140 @@ def to_aexpr(v: ToAExpr) -> AExpr:
         raise ValueError(f'type `{type(v)}` is not ToAExpr')
 
 
+@dataclass
+class Signal():
+    name: str
+    fullname: str
+    frame: inspect.FrameInfo
+
+    def fmt_ascii(self) -> str:
+        return self.name
+
+
+@dataclass
+class SignalId():
+    id: int
+    signals: List[Signal]
+
+    def fmt_ascii(self) -> str:
+        return self.signals[self.id].fullname
+
+
+class Component():
+    """Circuit Component"""
+
+    name: str
+    fullname: str
+    signals: List[Signal]
+    signal_ids: List[int]
+    asserts: List[Assert]
+    children: List[Component]
+
+    def __init__(self, name: str, fullname: str, signals: List[Signal]):
+        self.name = name
+        self.fullname = fullname
+        self.signals = signals
+        self.signal_ids = []
+        self.asserts = []
+        self.children = []
+
+    @classmethod
+    def main(cls):
+        return cls("main", "main", [])
+
+    def sub(self, name: str) -> Component:
+        sub_component = Component(name, f'{self.fullname}.{name}', self.signals)
+        self.children.append(sub_component)
+        return sub_component
+
+    def Signal(self, name: Optional[str] = None) -> AExpr:
+        if name is None:
+            name = varname()
+        signal = Signal(name, f'{self.fullname}.{name}', inspect.stack()[1])
+        self.signals.append(signal)
+        id = len(self.signals) - 1
+        self.signal_ids.append(id)
+        return AExpr(Var(SignalId(id, self.signals)))
+
+    def Assert(self, s: Cond | LExpr) -> Assert:
+        a = Assert(s, inspect.stack()[1])
+        self.asserts.append(a)
+        return a
+
+    def If(self, cond: LExpr, true_e: Cond | LExpr) -> Cond:
+        return Cond(If(cond, Assert(true_e)))
+
+    def IfElse(self, cond: LExpr, true_e: Cond | LExpr,
+               false_e: Cond | LExpr) -> Cond:
+        return Cond(IfElse(cond, Assert(true_e), Assert(false_e)))
+
+    def walk(self, fn: Callable[[Component], None]):
+        fn(self)
+        for child in self.children:
+            child.walk(fn)
+
+
+def IsZero(x: Component, value: AExpr) -> LExpr:
+    x = x.sub('isZero')
+    value_inv = x.Signal()
+    is_zero = ~(value * value_inv == 1)
+    x.Assert((value == 0) | ~is_zero)
+    return is_zero
+
+
+class Word():
+    lo: AExpr
+    hi: AExpr
+
+    def __init__(self, x: Component, name: Optional[str] = None):
+        if not name:
+            name = varname()
+        self.lo = x.Signal(f'{name}.lo')
+        self.hi = x.Signal(f'{name}.hi')
+
+
+def Add256(x: Component, a: Word, b: Word) -> Tuple[Word, AExpr]:
+    x = x.sub('add256')
+    res = Word(x)
+    carry_lo = x.Signal()
+    carry_hi = x.Signal()
+    x.Assert(a.lo + b.lo == res.lo + carry_lo * 2**128)
+    x.Assert(a.hi + b.hi + carry_lo == res.hi + carry_hi * 2**128)
+    return (res, carry_hi)
+
+
 def main():
+    x = Component.main()
+    a = x.Signal()
+    b = x.Signal()
+    x.Assert(x.If(a == 13,
+                  b != 5))
+    isZero = IsZero(x, a)
+    x.Assert(isZero)
+
+    x.Assert(a == 0)
+    x.Assert(x.If(a == 0,
+                  b == 42))
+
+    word_a = Word(x)
+    word_b = Word(x)
+    (res, _) = Add256(x, word_a, word_b)
+    x.Assert((res.lo == 1) & (res.hi == 1))
+
+    # ---
+    def dump(x: Component):
+        print(f'# {x.fullname}\n')
+        for id in x.signal_ids:
+            print(f'signal {x.signals[id].fullname}')
+        print()
+        for a in x.asserts:
+            print(a)
+        print()
+
+    x.walk(dump)
+
+
+def main1():
     def var(s: str) -> AExpr:
         return AExpr(Var(s))
 
@@ -274,6 +573,24 @@ def main():
     print(e * 3)
     print(e - 3)
     print((var('a') + var('b')) * (2 - var('c')))
+
+    e1 = var('a') == var('b')
+    e2 = var('a') != var('b')
+    print(e1)
+    print(e2)
+    print(e1 == e2)
+    print(~e1)
+    print(e1 & e2)
+    print(e1 | e2)
+    e3 = (var('c') == 42)
+
+    a1 = Cond(If(e1 & e2, Assert(e3)))
+    print(Cond(If(e1 | e2, Assert(a1))))
+    c = Cond(
+        IfElse(e1 | e2,
+               Assert(a1),
+               Assert(var('c') == 13)))
+    print(c)
 
 
 if __name__ == '__main__':

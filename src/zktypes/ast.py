@@ -1,6 +1,7 @@
-from functools import reduce
 # Needed to annotate with a type that hasn't been defined yet.
 from __future__ import annotations
+
+from functools import reduce
 from varname import varname  # type: ignore
 from dataclasses import dataclass, field
 from py_ecc import bn128
@@ -29,7 +30,6 @@ class Var():
             return self.v
         else:
             return self.v.fmt_ascii()
-
 
 
 @dataclass
@@ -595,3 +595,4 @@ def main1():
 
 if __name__ == '__main__':
     main()
+

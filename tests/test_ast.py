@@ -1,10 +1,10 @@
-from zktypes.ast import AExpr, Var, F, Cond, If, IfElse, Assert, StrVar, Component, LExpr, Type, LVar
+from zktypes.ast import AExpr, AVar, F, Cond, If, IfElse, Assert, StrVar, Component, LExpr, Type, LVar, io_list
 from varname import varname  # type: ignore
 from typing import  Optional, Tuple, List
 
 
 def var(s: str) -> AExpr:
-    return AExpr(Var(StrVar(s)))
+    return AExpr(AVar(StrVar(s)))
 
 
 def lvar(s: str) -> LExpr:
@@ -97,12 +97,12 @@ class Word:
     lo: AExpr
     hi: AExpr
 
-    def exprs(self) -> List[AExpr | LExpr]:
+    def vars(self) -> List[AExpr | LExpr]:
         return [self.lo, self.hi]
 
     def __init__(self, x: Component, name: Optional[str] = None):
         if not name:
-            name = varname()
+            name = varname(strict=False)
         self.lo = x.Signal(name=f"{name}.lo")
         self.hi = x.Signal(name=f"{name}.hi")
 
@@ -119,8 +119,6 @@ def Add256(x: Component) -> Component:
     x.Assert(a.lo + b.lo == res.lo + carry_lo * 2**128)
     x.Assert(a.hi + b.hi + carry_lo == res.hi + carry_hi * 2**128)
 
-    x.Inputs([a, b])
-    x.Outputs([res, carry_hi])
     return x.Finalize()
 
 
@@ -150,7 +148,18 @@ def test_component():
     def dump(x: Component):
         print(f"# {x.fullname}\n")
         for id in x.signal_ids:
-            print(f"signal {x.signals[id].fullname}")
+            signal = x.signals[id]
+            type = ""
+            io = ""
+            inputs = x.inputs_signal_ids()
+            outputs = x.outputs_signal_ids()
+            if signal.logical:
+                type = " logical"
+            if id in inputs:
+                io = " in"
+            elif id in outputs:
+                io = " out"
+            print(f"signal{io}{type} {x.signals[id].fullname}")
         print()
         for a in x.asserts:
             print(a)

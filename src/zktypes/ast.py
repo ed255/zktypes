@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from functools import reduce
+from itertools import chain
 from enum import Enum, auto
 from varname import varname  # type: ignore
 from dataclasses import dataclass, field
@@ -19,7 +20,7 @@ class SupportsFmtAscii(Protocol):
 
 
 class SupportsVars(Protocol):
-    def exprs(self) -> List[Var | LVar]:
+    def vars(self) -> List[AExpr | LExpr]:
         ...
 
 
@@ -46,7 +47,8 @@ class StrVar:
 
 
 @dataclass
-class Var(Generic[V]):
+class AVar(Generic[V]):
+    """Arithmetic Variable"""
     v: V
 
     def fmt_ascii(self) -> str:
@@ -83,14 +85,14 @@ class Pow:
 class AExpr:
     """Arithmetic Expression"""
 
-    e: Const | Var | Sum | Mul | Neg | Pow
+    e: Const | AVar | Sum | Mul | Neg | Pow
     typ: Optional[Type] = None
 
     def case_id(self: AExpr) -> int:
         match self.e:
             case Const(_):
                 return 0
-            case Var(_):
+            case AVar(_):
                 return 1
             case Neg(_):
                 return 2
@@ -107,10 +109,17 @@ class AExpr:
 
     def is_var(self) -> bool:
         match self.e:
-            case Var(_):
+            case AVar(_):
                 return True
             case _:
                 return False
+
+    def as_var(self) -> Optional[Any]:
+        match self.e:
+            case AVar(v):
+                return v
+            case _:
+                return None
 
     def __neg__(self: AExpr) -> AExpr:
         match self.e:
@@ -191,7 +200,7 @@ class AExpr:
                 return e.eval(vars) ** p
             case Const(c):
                 return c
-            case Var(v):
+            case AVar(v):
                 return vars.var_eval(v)
             case Sum(es):
                 return sum([e.eval(vars) for e in es], start=F(0))
@@ -200,14 +209,14 @@ class AExpr:
 
     def is_terminal(self: AExpr) -> bool:
         match self.e:
-            case Const(_) | Var(_) | Pow(_, _):
+            case Const(_) | AVar(_) | Pow(_, _):
                 return True
             case _:
                 return False
 
     def is_mul_terminal(self: AExpr) -> bool:
         match self.e:
-            case Const(_) | Var(_) | Mul(_) | Pow(_, _):
+            case Const(_) | AVar(_) | Mul(_) | Pow(_, _):
                 return True
             case _:
                 return False
@@ -236,7 +245,7 @@ class AExpr:
                     return f"0x{c.n:02x}"
                 else:
                     return f"{c}"
-            case Var(_) as e:
+            case AVar(_) as e:
                 return e.fmt_ascii()
             case Sum(es):
                 result = ""
@@ -324,12 +333,19 @@ class LExpr:
 
     e: LVar | And | Or | Not | Eq | Neq
 
-    def is_lvar(self) -> bool:
+    def is_var(self) -> bool:
         match self.e:
-            case Var(_):
+            case LVar(_):
                 return True
             case _:
                 return False
+
+    def as_var(self) -> Optional[Any]:
+        match self.e:
+            case LVar(v):
+                return v
+            case _:
+                return None
 
     def __eq__(a: LExpr, b: LExpr) -> LExpr:  # type: ignore
         """called with `==`"""
@@ -392,7 +408,7 @@ class LExpr:
 
     def is_terminal(self: LExpr) -> bool:
         match self.e:
-            case Not(_):
+            case LVar(_) | Not(_):
                 return True
             case _:
                 return False
@@ -588,7 +604,23 @@ class SignalId:
         return self.signals[self.id].fullname
 
 
-InputOutput = Var | LVar | List[Var] | List[LVar] | SupportsVars
+InputOutput = AExpr | LExpr | List[AExpr | LExpr] | SupportsVars
+
+
+def io_list(io: InputOutput) -> List[AVar | LVar]:
+    result: List[AExpr | LExpr] = []
+    match io:
+        case AExpr(_) as v:
+            result = [v]
+        case LExpr(_) as v:
+            result = [v]
+        case [*_] as vs:
+            result = vs
+        case _:
+            result = io.vars()
+    for v in result:
+        assert v.is_var()
+    return [v.as_var() for v in result]
 
 
 class IO(Enum):
@@ -611,10 +643,10 @@ class Component:
     signal_ids: List[int]
     asserts: List[Assert]
     children: List[Component]
-    inputs: List[Var | LVar]
-    outputs: List[Var | LVar]
+    inputs: List[InputOutput]
+    outputs: List[InputOutput]
     state: ComponentState
-    parent_inputs: List[Var | LVar]
+    parent_inputs: List[InputOutput]
 
     def __init__(self, name: str, fullname: str, signals: List[Signal]):
         self.name = name
@@ -632,6 +664,12 @@ class Component:
     def main(cls):
         return cls("main", "main", [])
 
+    def inputs_signal_ids(self) -> List[int]:
+        return [s1.id for s1 in list(chain(*[io_list(s) for s in self.inputs]))]
+
+    def outputs_signal_ids(self) -> List[int]:
+        return [s1.id for s1 in list(chain(*[io_list(s) for s in self.outputs]))]
+
     def Sub(self, name: str) -> Component:
         assert self.state == ComponentState.STARTED
         sub_component = Component(name, f"{self.fullname}.{name}", self.signals)
@@ -641,12 +679,12 @@ class Component:
     def Signal(self, type: Optional[Type] = None, name: Optional[str] = None, io: Optional[IO] = None) -> AExpr:
         assert self.state == ComponentState.STARTED
         if name is None:
-            name = varname()
+            name = varname(strict=False)
         signal = Signal(name, f"{self.fullname}.{name}", inspect.stack()[1])
         self.signals.append(signal)
         id = len(self.signals) - 1
         self.signal_ids.append(id)
-        e = AExpr(Var(SignalId(id, self.signals)))
+        e = AExpr(AVar(SignalId(id, self.signals)))
         if type is not None:
             e.type(type)
         return e
@@ -654,7 +692,7 @@ class Component:
     def LSignal(self, name: Optional[str] = None) -> LExpr:
         assert self.state == ComponentState.STARTED
         if name is None:
-            name = varname()
+            name = varname(strict=False)
         signal = Signal(name, f"{self.fullname}.{name}", inspect.stack()[1], logical=True)
         self.signals.append(signal)
         id = len(self.signals) - 1
@@ -662,32 +700,22 @@ class Component:
         e = LExpr(LVar(SignalId(id, self.signals)))
         return e
 
-    def In(self, signals: )
+    def In(self, signals: InputOutput) -> Any:
+        self.inputs.append(signals)
+        return signals
 
-    # def SignalIn(self, *args, **kargs) -> AExpr:
-    #     kargs["io"] = IO.IN
-    #     return self.Signal(*args, **kargs)
-
-    # def LSignalIn(self, *args, **kargs) -> LExpr:
-    #     kargs["io"] = IO.IN
-    #     return self.LSignal(*args, **kargs)
-
-    # def SignalOut(self, *args, **kargs) -> AExpr:
-    #     kargs["io"] = IO.OUT
-    #     return self.Signal(*args, **kargs)
-
-    # def LSignalOut(self, *args, **kargs) -> LExpr:
-    #     kargs["io"] = IO.OUT
-    #     return self.LSignal(*args, **kargs)
+    def Out(self, signals: InputOutput) -> Any:
+        self.outputs.append(signals)
+        return signals
 
     def Eq(self, signal: AExpr | LExpr, e: AExpr | LExpr) -> Assert:
         assert self.state == ComponentState.STARTED
         if isinstance(signal, AExpr):
-            assert signal.is_var(), f"`{signal}` is not a Var"
+            assert signal.is_var(), f"`{signal}` is not a AVar"
             assert isinstance(e, AExpr)
             a = Assert(signal == e, inspect.stack()[1])
         elif isinstance(signal, LExpr):
-            assert signal.is_lvar(), f"`{signal}` is not a Var"
+            assert signal.is_var(), f"`{signal}` is not a LVar"
             assert isinstance(e, LExpr)
             a = Assert(signal == e, inspect.stack()[1])
         self.asserts.append(a)
@@ -706,14 +734,6 @@ class Component:
     def IfElse(self, cond: LExpr, true_e: Cond | LExpr, false_e: Cond | LExpr) -> Cond:
         assert self.state == ComponentState.STARTED
         return Cond(IfElse(cond, Assert(true_e), Assert(false_e)))
-
-    # def Inputs(self, inputs: List[InputOutput]):
-    #     assert self.state == ComponentState.STARTED
-    #     self.inputs += inputs
-
-    # def Outputs(self, outputs: List[InputOutput]):
-    #     assert self.state == ComponentState.STARTED
-    #     self.outputs += outputs
 
     def Finalize(self) -> Component:
         assert self.state == ComponentState.STARTED

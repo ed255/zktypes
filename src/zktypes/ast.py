@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from functools import reduce
+from enum import Enum, auto
 from varname import varname  # type: ignore
 from dataclasses import dataclass, field
 from py_ecc import bn128
@@ -14,6 +15,19 @@ F = bn128.FQ
 
 class SupportsFmtAscii(Protocol):
     def fmt_ascii(self) -> str:
+        ...
+
+
+class SupportsVars(Protocol):
+    def exprs(self) -> List[Var | LVar]:
+        ...
+
+
+class SupportsEval(Protocol):
+    def var_eval(self, Any) -> F:
+        ...
+
+    def lvar_eval(self, Any) -> bool:
         ...
 
 
@@ -70,9 +84,9 @@ class AExpr:
     """Arithmetic Expression"""
 
     e: Const | Var | Sum | Mul | Neg | Pow
-    type: Optional[Type] = None
+    typ: Optional[Type] = None
 
-    def type_id(self: AExpr) -> int:
+    def case_id(self: AExpr) -> int:
         match self.e:
             case Const(_):
                 return 0
@@ -86,6 +100,17 @@ class AExpr:
                 return 4
             case Mul(_):
                 return 5
+
+    def type(self, type: Type) -> AExpr:
+        self.typ = type
+        return self
+
+    def is_var(self) -> bool:
+        match self.e:
+            case Var(_):
+                return True
+            case _:
+                return False
 
     def __neg__(self: AExpr) -> AExpr:
         match self.e:
@@ -158,20 +183,20 @@ class AExpr:
         (a, b) = (to_aexpr(a), to_aexpr(b))
         return LExpr(Neq(AExprPair(a, b)))
 
-    def eval(self, var_eval: Callable[[Any], F]) -> F:
+    def eval(self, vars: SupportsEval) -> F:
         match self.e:
             case Neg(e):
-                return -e.eval(var_eval)
+                return -e.eval(vars)
             case Pow(e, p):
-                return e.eval(var_eval) ** p
+                return e.eval(vars) ** p
             case Const(c):
                 return c
             case Var(v):
-                return var_eval(v)
+                return vars.var_eval(v)
             case Sum(es):
-                return sum([e.eval(var_eval) for e in es], start=F(0))
+                return sum([e.eval(vars) for e in es], start=F(0))
             case Mul(es):
-                return reduce(lambda x, y: x * y, [e.eval(var_eval) for e in es], F(1))
+                return reduce(lambda x, y: x * y, [e.eval(vars) for e in es], F(1))
 
     def is_terminal(self: AExpr) -> bool:
         match self.e:
@@ -260,6 +285,15 @@ class LExprPair:
 
 
 @dataclass
+class LVar(Generic[V]):
+    """Logical Variable"""
+    v: V
+
+    def fmt_ascii(self) -> str:
+        return self.v.fmt_ascii()
+
+
+@dataclass
 class And:
     es: List[LExpr]
 
@@ -288,7 +322,14 @@ class Neq:
 class LExpr:
     """Logical Expression"""
 
-    e: And | Or | Not | Eq | Neq
+    e: LVar | And | Or | Not | Eq | Neq
+
+    def is_lvar(self) -> bool:
+        match self.e:
+            case Var(_):
+                return True
+            case _:
+                return False
 
     def __eq__(a: LExpr, b: LExpr) -> LExpr:  # type: ignore
         """called with `==`"""
@@ -326,26 +367,28 @@ class LExpr:
             case _:
                 return LExpr(Or([a, b]))
 
-    def eval(self, var_eval: Callable[[Any], F]) -> bool:
+    def eval(self, vars: SupportsEval) -> bool:
         match self.e:
+            case LVar(v):
+                return vars.lvar_eval(v)
             case And(es):
-                return reduce(lambda x, y: x and y, [e.eval(var_eval) for e in es], True)
+                return reduce(lambda x, y: x and y, [e.eval(vars) for e in es], True)
             case Or(es):
-                return reduce(lambda x, y: x or y, [e.eval(var_eval) for e in es], False)
+                return reduce(lambda x, y: x or y, [e.eval(vars) for e in es], False)
             case Not(e):
-                return not e.eval(var_eval)
+                return not e.eval(vars)
             case Eq(pair):
                 match pair:
                     case AExprPair(lhs, rhs):
-                        return lhs.eval(var_eval) == rhs.eval(var_eval)
+                        return lhs.eval(vars) == rhs.eval(vars)
                     case LExprPair(lhs, rhs):
-                        return lhs.eval(var_eval) == rhs.eval(var_eval)
+                        return lhs.eval(vars) == rhs.eval(vars)
             case Neq(pair):
                 match pair:
                     case AExprPair(lhs, rhs):
-                        return lhs.eval(var_eval) != rhs.eval(var_eval)
+                        return lhs.eval(vars) != rhs.eval(vars)
                     case LExprPair(lhs, rhs):
-                        return lhs.eval(var_eval) != rhs.eval(var_eval)
+                        return lhs.eval(vars) != rhs.eval(vars)
 
     def is_terminal(self: LExpr) -> bool:
         match self.e:
@@ -366,6 +409,8 @@ class LExpr:
             return result
 
         match self.e:
+            case LVar(_) as e:
+                return e.fmt_ascii()
             case And(es):
                 return " and ".join([fmt_exp(e) for e in es])
             case Or(es):
@@ -397,12 +442,12 @@ class Assert:
     def __str__(self: Assert) -> str:
         return self.s.__str__()
 
-    def verify(self, var_eval: Callable[[Any], F]) -> bool:
+    def verify(self, vars: SupportsEval) -> bool:
         match self.s:
             case Cond(_) as a:
-                return a.verify(var_eval)
+                return a.verify(vars)
             case LExpr(_) as e:
-                return e.eval(var_eval)
+                return e.eval(vars)
 
 
 @dataclass
@@ -460,18 +505,18 @@ class Cond:
     def __str__(self: Cond) -> str:
         return "\n".join(self.fmt_ascii(0))
 
-    def verify(self, var_eval: Callable[[Any], F]) -> bool:
+    def verify(self, vars: SupportsEval) -> bool:
         match self.c:
             case If(cond, true_e):
-                if cond.eval(var_eval):
-                    return true_e.verify(var_eval)
+                if cond.eval(vars):
+                    return true_e.verify(vars)
                 else:
                     return True
             case IfElse(cond, true_e, false_e):
-                if cond.eval(var_eval):
-                    return true_e.verify(var_eval)
+                if cond.eval(vars):
+                    return true_e.verify(vars)
                 else:
-                    return false_e.verify(var_eval)
+                    return false_e.verify(vars)
             case Switch(_, _):
                 raise NotImplementedError
 
@@ -506,6 +551,8 @@ class StaticBound:
 class Type:
     name: str
     t: StaticBound
+    inferred: bool = False
+    force: bool = False
 
     @classmethod
     def Bound(cls, start: int | F, end: int | F, name: Optional[str] = None):
@@ -513,13 +560,20 @@ class Type:
             name = varname()
         return cls(name, StaticBound(start, end))
 
+    @classmethod
+    def Any(cls):
+        return cls("Any", StaticBound(F(0), F(-1)))
+
+    def forced(self) -> Type:
+        return Type(self.name, self.t, force=True)
+
 
 @dataclass
 class Signal:
     name: str
     fullname: str
     frame: inspect.FrameInfo
-    type: Optional[Type] = None
+    logical: bool = False
 
     def fmt_ascii(self) -> str:
         return self.name
@@ -534,6 +588,20 @@ class SignalId:
         return self.signals[self.id].fullname
 
 
+InputOutput = Var | LVar | List[Var] | List[LVar] | SupportsVars
+
+
+class IO(Enum):
+    IN = auto()
+    OUT = auto()
+
+
+class ComponentState(Enum):
+    STARTED = auto()
+    FINALIZED = auto()
+    CONNECTED = auto()
+
+
 class Component:
     """Circuit Component"""
 
@@ -543,6 +611,10 @@ class Component:
     signal_ids: List[int]
     asserts: List[Assert]
     children: List[Component]
+    inputs: List[Var | LVar]
+    outputs: List[Var | LVar]
+    state: ComponentState
+    parent_inputs: List[Var | LVar]
 
     def __init__(self, name: str, fullname: str, signals: List[Signal]):
         self.name = name
@@ -551,70 +623,113 @@ class Component:
         self.signal_ids = []
         self.asserts = []
         self.children = []
+        self.inputs = []
+        self.outputs = []
+        self.parent_inputs = []
+        self.state = ComponentState.STARTED
 
     @classmethod
     def main(cls):
         return cls("main", "main", [])
 
-    def sub(self, name: str) -> Component:
+    def Sub(self, name: str) -> Component:
+        assert self.state == ComponentState.STARTED
         sub_component = Component(name, f"{self.fullname}.{name}", self.signals)
         self.children.append(sub_component)
         return sub_component
 
-    def Signal(self, name: Optional[str] = None, type: Optional[Type] = None) -> AExpr:
+    def Signal(self, type: Optional[Type] = None, name: Optional[str] = None, io: Optional[IO] = None) -> AExpr:
+        assert self.state == ComponentState.STARTED
         if name is None:
             name = varname()
-        signal = Signal(name, f"{self.fullname}.{name}", inspect.stack()[1], type)
+        signal = Signal(name, f"{self.fullname}.{name}", inspect.stack()[1])
         self.signals.append(signal)
         id = len(self.signals) - 1
         self.signal_ids.append(id)
-        return AExpr(Var(SignalId(id, self.signals)))
+        e = AExpr(Var(SignalId(id, self.signals)))
+        if type is not None:
+            e.type(type)
+        return e
+
+    def LSignal(self, name: Optional[str] = None) -> LExpr:
+        assert self.state == ComponentState.STARTED
+        if name is None:
+            name = varname()
+        signal = Signal(name, f"{self.fullname}.{name}", inspect.stack()[1], logical=True)
+        self.signals.append(signal)
+        id = len(self.signals) - 1
+        self.signal_ids.append(id)
+        e = LExpr(LVar(SignalId(id, self.signals)))
+        return e
+
+    def In(self, signals: )
+
+    # def SignalIn(self, *args, **kargs) -> AExpr:
+    #     kargs["io"] = IO.IN
+    #     return self.Signal(*args, **kargs)
+
+    # def LSignalIn(self, *args, **kargs) -> LExpr:
+    #     kargs["io"] = IO.IN
+    #     return self.LSignal(*args, **kargs)
+
+    # def SignalOut(self, *args, **kargs) -> AExpr:
+    #     kargs["io"] = IO.OUT
+    #     return self.Signal(*args, **kargs)
+
+    # def LSignalOut(self, *args, **kargs) -> LExpr:
+    #     kargs["io"] = IO.OUT
+    #     return self.LSignal(*args, **kargs)
+
+    def Eq(self, signal: AExpr | LExpr, e: AExpr | LExpr) -> Assert:
+        assert self.state == ComponentState.STARTED
+        if isinstance(signal, AExpr):
+            assert signal.is_var(), f"`{signal}` is not a Var"
+            assert isinstance(e, AExpr)
+            a = Assert(signal == e, inspect.stack()[1])
+        elif isinstance(signal, LExpr):
+            assert signal.is_lvar(), f"`{signal}` is not a Var"
+            assert isinstance(e, LExpr)
+            a = Assert(signal == e, inspect.stack()[1])
+        self.asserts.append(a)
+        return a
 
     def Assert(self, s: Cond | LExpr) -> Assert:
+        assert self.state == ComponentState.STARTED
         a = Assert(s, inspect.stack()[1])
         self.asserts.append(a)
         return a
 
     def If(self, cond: LExpr, true_e: Cond | LExpr) -> Cond:
+        assert self.state == ComponentState.STARTED
         return Cond(If(cond, Assert(true_e)))
 
     def IfElse(self, cond: LExpr, true_e: Cond | LExpr, false_e: Cond | LExpr) -> Cond:
+        assert self.state == ComponentState.STARTED
         return Cond(IfElse(cond, Assert(true_e), Assert(false_e)))
+
+    # def Inputs(self, inputs: List[InputOutput]):
+    #     assert self.state == ComponentState.STARTED
+    #     self.inputs += inputs
+
+    # def Outputs(self, outputs: List[InputOutput]):
+    #     assert self.state == ComponentState.STARTED
+    #     self.outputs += outputs
+
+    def Finalize(self) -> Component:
+        assert self.state == ComponentState.STARTED
+        self.state = ComponentState.FINALIZED
+        return self
+
+    def Connect(self, inputs: List[InputOutput]) -> List[InputOutput]:
+        assert self.state == ComponentState.FINALIZED
+        assert len(inputs) == len(self.inputs)
+        for (i, parent_input) in enumerate(inputs):
+            assert isinstance(parent_input, type(self.inputs[i]))
+        self.state = ComponentState.CONNECTED
+        self.parent_inputs = inputs
+        return self.outputs
 
     def walk(self, fn: Callable[[Component], None]):
         fn(self)
         for child in self.children:
             child.walk(fn)
-
-
-def main():
-    x = Component.main()
-    a = x.Signal()
-    b = x.Signal()
-    x.Assert(x.If(a == 13, b != 5))
-    isZero = IsZero(x, a)
-    x.Assert(isZero)
-
-    x.Assert(a == 0)
-    x.Assert(x.If(a == 0, b == 42))
-
-    word_a = Word(x)
-    word_b = Word(x)
-    (res, _) = Add256(x, word_a, word_b)
-    x.Assert((res.lo == 1) & (res.hi == 1))
-
-    # ---
-    def dump(x: Component):
-        print(f"# {x.fullname}\n")
-        for id in x.signal_ids:
-            print(f"signal {x.signals[id].fullname}")
-        print()
-        for a in x.asserts:
-            print(a)
-        print()
-
-    x.walk(dump)
-
-
-if __name__ == "__main__":
-    main()

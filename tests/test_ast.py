@@ -1,10 +1,14 @@
-from zktypes.ast import AExpr, Var, F, Cond, If, IfElse, Assert, StrVar, Component, LExpr, Type
+from zktypes.ast import AExpr, Var, F, Cond, If, IfElse, Assert, StrVar, Component, LExpr, Type, LVar
 from varname import varname  # type: ignore
-from typing import  Optional, Tuple
+from typing import  Optional, Tuple, List
 
 
 def var(s: str) -> AExpr:
     return AExpr(Var(StrVar(s)))
+
+
+def lvar(s: str) -> LExpr:
+    return LExpr(LVar(StrVar(s)))
 
 
 def test_aexpr_build():
@@ -76,37 +80,54 @@ def test_verify():
     assert Assert(~(var("a") == 5)).verify(var_eval) == True
 
 
-def IsZero(x: Component, value: AExpr) -> LExpr:
-    x = x.sub("isZero")
+def IsZero(x: Component) -> Component:
+    x = x.Sub("isZero")
+
+    value = x.In(x.Signal(TypeAny))
+    is_zero = x.Out(x.LSignal())
+
     value_inv = x.Signal()
-    is_zero = ~(value * value_inv == 1)
+    x.Eq(is_zero, ~(value * value_inv == 1))
     x.Assert((value == 0) | ~is_zero)
-    return is_zero
+
+    return x.Finalize()
 
 
 class Word:
     lo: AExpr
     hi: AExpr
 
+    def exprs(self) -> List[AExpr | LExpr]:
+        return [self.lo, self.hi]
+
     def __init__(self, x: Component, name: Optional[str] = None):
         if not name:
             name = varname()
-        self.lo = x.Signal(f"{name}.lo")
-        self.hi = x.Signal(f"{name}.hi")
+        self.lo = x.Signal(name=f"{name}.lo")
+        self.hi = x.Signal(name=f"{name}.hi")
 
 
-def Add256(x: Component, a: Word, b: Word) -> Tuple[Word, AExpr]:
-    x = x.sub("add256")
-    res = Word(x)
-    carry_lo = x.Signal()
-    carry_hi = x.Signal()
+def Add256(x: Component) -> Component:
+    x = x.Sub("add256")
+
+    a = x.In(Word(x))
+    b = x.In(Word(x))
+    res = x.Out(Word(x))
+    carry_hi = x.Out(x.Signal(TypeU1))
+    carry_lo = x.Signal(TypeU1)
+
     x.Assert(a.lo + b.lo == res.lo + carry_lo * 2**128)
     x.Assert(a.hi + b.hi + carry_lo == res.hi + carry_hi * 2**128)
-    return (res, carry_hi)
+
+    x.Inputs([a, b])
+    x.Outputs([res, carry_hi])
+    return x.Finalize()
 
 
+TypeU1 = Type.Bound(0, 1)
 TypeU8 = Type.Bound(0, 255)
 TypeU128 = Type.Bound(0, F(2**128))
+TypeAny = Type.Any()
 
 
 def test_component():
@@ -114,7 +135,7 @@ def test_component():
     a = x.Signal()
     b = x.Signal()
     x.Assert(x.If(a == 13, b != 5))
-    isZero = IsZero(x, a)
+    [isZero,] = IsZero(x).Connect([a])
     x.Assert(isZero)
 
     x.Assert(a == 0)
@@ -122,7 +143,7 @@ def test_component():
 
     word_a = Word(x)
     word_b = Word(x)
-    (res, _) = Add256(x, word_a, word_b)
+    [res, _] = Add256(x).Connect([word_a, word_b])
     x.Assert((res.lo == 1) & (res.hi == 1))
 
     # ---

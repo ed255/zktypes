@@ -7,7 +7,7 @@ from enum import Enum, auto
 from varname import varname  # type: ignore
 from dataclasses import dataclass, field
 from py_ecc import bn128
-from typing import List, Union, Optional, Callable, Any, Self, TypeVar, Generic, Tuple
+from typing import List, Union, Optional, Callable, Any, Self, TypeVar, Generic, Tuple, Dict
 from typing_extensions import Protocol
 import inspect
 
@@ -86,7 +86,6 @@ class AExpr:
     """Arithmetic Expression"""
 
     e: Const | AVar | Sum | Mul | Neg | Pow
-    typ: Optional[Type] = None
 
     def case_id(self: AExpr) -> int:
         match self.e:
@@ -102,10 +101,6 @@ class AExpr:
                 return 4
             case Mul(_):
                 return 5
-
-    def type(self, type: Type) -> AExpr:
-        self.typ = type
-        return self
 
     def is_var(self) -> bool:
         match self.e:
@@ -191,6 +186,9 @@ class AExpr:
     def __ne__(a: ToAExpr, b: ToAExpr) -> LExpr:  # type: ignore
         (a, b) = (to_aexpr(a), to_aexpr(b))
         return LExpr(Neq(AExprPair(a, b)))
+
+    # def type_eval(self) -> ()
+    # TODO
 
     def eval(self, vars: SupportsEval) -> F:
         match self.e:
@@ -560,7 +558,28 @@ class StaticBound:
             start = F(start)
         if isinstance(end, int):
             end = F(end)
+        assert start.n <= end.n
         self.interval = (start, end)
+
+    def __add__(a: StaticBound, b: StaticBound) -> Tuple[StaticBound, bool]:
+        start = a.interval[0].n + b.interval[0].n
+        end = a.interval[1].n + b.interval[1].n
+        start_f = F(start)
+        end_f = F(end)
+        overflow = False
+        if start_f.n != start or end_f.n != end:
+            overflow = True
+        return StaticBound(start_f, end_f), overflow
+
+    def __mul__(a: StaticBound, b: StaticBound) -> Tuple[StaticBound, bool]:
+        start = a.interval[0].n * b.interval[0].n
+        end = a.interval[1].n * b.interval[1].n
+        start_f = F(start)
+        end_f = F(end)
+        overflow = False
+        if start_f.n != start or end_f.n != end:
+            overflow = True
+        return StaticBound(start_f, end_f), overflow
 
 
 @dataclass
@@ -589,6 +608,7 @@ class Signal:
     name: str
     fullname: str
     frame: inspect.FrameInfo
+    type: Optional[Type] = None
     logical: bool = False
 
     def fmt_ascii(self) -> str:
@@ -641,8 +661,10 @@ class Component:
     fullname: str
     signals: List[Signal]
     signal_ids: List[int]
+    signal_names: Dict[str, int]
     asserts: List[Assert]
     children: List[Component]
+    children_names: Dict[str, int]
     inputs: List[InputOutput]
     outputs: List[InputOutput]
     state: ComponentState
@@ -653,8 +675,10 @@ class Component:
         self.fullname = fullname
         self.signals = signals
         self.signal_ids = []
+        self.signal_names = {}
         self.asserts = []
         self.children = []
+        self.children_names = {}
         self.inputs = []
         self.outputs = []
         self.parent_inputs = []
@@ -670,8 +694,21 @@ class Component:
     def outputs_signal_ids(self) -> List[int]:
         return [s1.id for s1 in list(chain(*[io_list(s) for s in self.outputs]))]
 
+    def unique_name(self, name: str, names: Dict[str, int]) -> str:
+        sufix = ""
+        if name in names:
+            sufix = f"_{names[name]}"
+            names[name] += 1
+        else:
+            names[name] = 1
+        return f"{name}{sufix}"
+
+    def unique_signal_name(self, name: str) -> str:
+        return self.unique_name(name, self.signal_names)
+
     def Sub(self, name: str) -> Component:
         assert self.state == ComponentState.STARTED
+        name = self.unique_name(name, self.children_names)
         sub_component = Component(name, f"{self.fullname}.{name}", self.signals)
         self.children.append(sub_component)
         return sub_component
@@ -680,19 +717,19 @@ class Component:
         assert self.state == ComponentState.STARTED
         if name is None:
             name = varname(strict=False)
-        signal = Signal(name, f"{self.fullname}.{name}", inspect.stack()[1])
+        name = self.unique_signal_name(name)
+        signal = Signal(name, f"{self.fullname}.{name}", inspect.stack()[1], type=type)
         self.signals.append(signal)
         id = len(self.signals) - 1
         self.signal_ids.append(id)
         e = AExpr(AVar(SignalId(id, self.signals)))
-        if type is not None:
-            e.type(type)
         return e
 
     def LSignal(self, name: Optional[str] = None) -> LExpr:
         assert self.state == ComponentState.STARTED
         if name is None:
             name = varname(strict=False)
+        name = self.unique_signal_name(name)
         signal = Signal(name, f"{self.fullname}.{name}", inspect.stack()[1], logical=True)
         self.signals.append(signal)
         id = len(self.signals) - 1

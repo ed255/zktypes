@@ -83,7 +83,7 @@ def test_verify():
 def IsZero(x: Component) -> Component:
     x = x.Sub("isZero")
 
-    value = x.In(x.Signal(TypeAny))
+    value = x.In(x.Signal())
     is_zero = x.Out(x.LSignal())
 
     value_inv = x.Signal()
@@ -103,8 +103,8 @@ class Word:
     def __init__(self, x: Component, name: Optional[str] = None):
         if not name:
             name = varname(strict=False)
-        self.lo = x.Signal(name=f"{name}.lo")
-        self.hi = x.Signal(name=f"{name}.hi")
+        self.lo = x.Signal(TypeU128, name=f"{name}_lo")
+        self.hi = x.Signal(TypeU128, name=f"{name}_hi")
 
 
 def Add256(x: Component) -> Component:
@@ -135,6 +135,8 @@ def test_component():
     x.Assert(x.If(a == 13, b != 5))
     [isZero,] = IsZero(x).Connect([a])
     x.Assert(isZero)
+    [isZero,] = IsZero(x).Connect([b])
+    x.Assert(isZero)
 
     x.Assert(a == 0)
     x.Assert(x.If(a == 0, b == 42))
@@ -155,6 +157,8 @@ def test_component():
             outputs = x.outputs_signal_ids()
             if signal.logical:
                 type = " logical"
+            elif signal.type is not None:
+                type = f" {signal.type.name}"
             if id in inputs:
                 io = " in"
             elif id in outputs:

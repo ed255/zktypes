@@ -1,4 +1,4 @@
-from zktypes.ast import AExpr, AVar, F, Cond, If, IfElse, Assert, StrVar, Component, LExpr, Type, LVar, io_list
+from zktypes.ast import AExpr, AVar, F, Cond, If, IfElse, Assert, StrVar, Component, LExpr, Type, LVar, io_list, graph, dump
 from varname import varname  # type: ignore
 from typing import  Optional, Tuple, List
 
@@ -96,15 +96,28 @@ def IsZero(x: Component) -> Component:
 class Word:
     lo: AExpr
     hi: AExpr
+    name: str
 
-    def vars(self) -> List[AExpr | LExpr]:
-        return [self.lo, self.hi]
+    def vars(self) -> List[AVar | LVar]:
+        return [self.lo.as_var(), self.hi.as_var()]
 
     def __init__(self, x: Component, name: Optional[str] = None):
-        if not name:
+        if name is None:
             name = varname(strict=False)
+        self.name = name
         self.lo = x.Signal(TypeU128, name=f"{name}_lo")
         self.hi = x.Signal(TypeU128, name=f"{name}_hi")
+
+    def to_64bit_limbs(self, x: Component) -> List[AExpr]:
+        l0 = x.Signal(TypeU64, name=f"{self.name}_0")
+        l1 = x.Signal(TypeU64, name=f"{self.name}_1")
+        l2 = x.Signal(TypeU64, name=f"{self.name}_2")
+        l3 = x.Signal(TypeU64, name=f"{self.name}_3")
+        for l in [l0, l1, l2, l3]:
+            x.Range(l, TypeU64.t)
+        x.Eq(self.lo, l0 + l1 * 2**64)
+        x.Eq(self.hi, l2 + l3 * 2**64)
+        return [l0, l1, l2, l3]
 
 
 def Add256(x: Component) -> Component:
@@ -124,7 +137,9 @@ def Add256(x: Component) -> Component:
 
 TypeU1 = Type.Bound(0, 1)
 TypeU8 = Type.Bound(0, 255)
-TypeU128 = Type.Bound(0, F(2**128))
+TypeU64 = Type.Bound(0, F(2**64-1))
+TypeU128 = Type.Bound(0, F(2**128-1))
+Type9B = Type.Bound(0, F(2**(9*8)-1))
 TypeAny = Type.Any()
 
 
@@ -142,31 +157,84 @@ def test_component():
     x.Assert(x.If(a == 0, b == 42))
 
     word_a = Word(x)
+    x.Range(word_a.lo, TypeU128.t)
+    x.Range(word_a.hi, TypeU128.t)
     word_b = Word(x)
+    x.Range(word_b.lo, TypeU128.t)
+    x.Range(word_b.hi, TypeU128.t)
     [res, _] = Add256(x).Connect([word_a, word_b])
     x.Assert((res.lo == 1) & (res.hi == 1))
 
-    # ---
-    def dump(x: Component):
-        print(f"# {x.fullname}\n")
-        for id in x.signal_ids:
-            signal = x.signals[id]
-            type = ""
-            io = ""
-            inputs = x.inputs_signal_ids()
-            outputs = x.outputs_signal_ids()
-            if signal.logical:
-                type = " logical"
-            elif signal.type is not None:
-                type = f" {signal.type.name}"
-            if id in inputs:
-                io = " in"
-            elif id in outputs:
-                io = " out"
-            print(f"signal{io}{type} {x.signals[id].fullname}")
-        print()
-        for a in x.asserts:
-            print(a)
-        print()
+    graph(x)
 
-    x.walk(dump)
+
+def MulAddWord(x: Component) -> Component:
+    """d = a * b + c"""
+    x = x.Sub("mulAddWord")
+
+    a = x.In(Word(x))
+    b = x.In(Word(x))
+    c = x.In(Word(x))
+    d = x.Out(Word(x))
+    has_overflow = x.Out(x.LSignal())
+
+    a64s = a.to_64bit_limbs(x)
+    b64s = b.to_64bit_limbs(x)
+
+    TypeU132 = Type.Bound(0, F(2**123-1))
+    t0 = x.Eq(x.Signal(TypeU132), a64s[0] * b64s[0])
+    t1 = x.Eq(x.Signal(TypeU132), a64s[0] * b64s[1] + a64s[1] * b64s[0])
+    t2 = x.Eq(x.Signal(TypeU132), a64s[0] * b64s[2] + a64s[1] * b64s[1] + a64s[2] * b64s[0])
+    t3 = x.Eq(x.Signal(TypeU132), a64s[0] * b64s[3] + a64s[1] * b64s[2] + a64s[2] * b64s[1] + a64s[3] * b64s[0])
+    carry_lo = x.Signal(Type9B)
+    carry_hi = x.Signal(Type9B)
+    x.Eq(d.lo, t0 + t1 * 2**64 + c.lo - carry_lo * 2**128)
+    x.Eq(d.hi, carry_lo + t2 + t3 * 2**64 + c.hi - carry_hi * 2**128)
+    overflow = x.Eq(
+            x.Signal(),
+            carry_hi
+            + a64s[1] * b64s[3]
+            + a64s[2] * b64s[2]
+            + a64s[3] * b64s[1]
+            + a64s[2] * b64s[3]
+            + a64s[3] * b64s[2]
+            + a64s[3] * b64s[3]
+    )
+    x.Eq(has_overflow, overflow != 0)
+
+    # range check for carries
+    x.Range(carry_lo, Type9B.t)
+    x.Range(carry_hi, Type9B.t)
+
+    x.Assert(t0 + t1 * (2**64) + c.lo == d.lo + carry_lo * (2**128))
+    x.Assert(t2 + t3 * (2**64) + c.hi + carry_lo == d.hi + carry_hi * (2**128))
+
+    return x.Finalize()
+
+
+def MulModWord(x: Component) -> Component:
+    """r = (a * b) mod n"""
+    x = x.Sub("mulModWord")
+
+    return x.Finalize()
+
+
+def test_muladd():
+
+    x = Component.main()
+
+    a = Word(x)
+    x.Range(a.lo, TypeU128.t)
+    x.Range(a.hi, TypeU128.t)
+    b = Word(x)
+    x.Range(b.lo, TypeU128.t)
+    x.Range(b.hi, TypeU128.t)
+    c = Word(x)
+    x.Range(c.lo, TypeU128.t)
+    x.Range(c.hi, TypeU128.t)
+
+    mul_add_words = MulAddWord(x)
+    mul_add_words.type_check()
+    [d, carry] = mul_add_words.Connect([a, b, c])
+
+    # dump(x)

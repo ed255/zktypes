@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from functools import reduce
+from copy import deepcopy
 from itertools import chain
 from enum import Enum, auto
 from varname import varname  # type: ignore
@@ -20,7 +21,7 @@ class SupportsFmtAscii(Protocol):
 
 
 class SupportsVars(Protocol):
-    def vars(self) -> List[AExpr | LExpr]:
+    def vars(self) -> List[AVar | LVar]:
         ...
 
 
@@ -30,6 +31,19 @@ class SupportsEval(Protocol):
 
     def lvar_eval(self, Any) -> bool:
         ...
+
+
+def f_fmt_ascii(c: F) -> str:
+    c_bin = bin(c.n)[2:]
+    c_bin_p1 = bin(c.n+1)[2:]
+    if len(c_bin) >= 8 and c_bin.count("1") == 1:
+        return f"2^{len(c_bin)-1}"
+    if len(c_bin_p1) >= 8 and c_bin_p1.count("1") == 1:
+        return f"2^{len(c_bin_p1)-1}-1"
+    elif len(c_bin) >= 16:
+        return f"0x{c.n:02x}"
+    else:
+        return f"{c}"
 
 
 V = TypeVar("V", bound=SupportsFmtAscii)
@@ -116,6 +130,22 @@ class AExpr:
             case _:
                 return None
 
+    def vars(self) -> List[Any]:
+        match self.e:
+            case Neg(e):
+                return e.vars()
+            case Pow(e, _):
+                return e.vars()
+            case Const(_):
+                return []
+            case AVar(v):
+                return [v]
+            case Sum(es):
+                return list(chain(*[e.vars() for e in es]))
+            case Mul(es):
+                return list(chain(*[e.vars() for e in es]))
+
+
     def __neg__(self: AExpr) -> AExpr:
         match self.e:
             case Neg(e):
@@ -173,6 +203,11 @@ class AExpr:
         a = to_aexpr(a)
         return AExpr(Pow(a, b))
 
+    def __truediv__(a: ToAExpr, b: int) -> AExpr:
+        a = to_aexpr(a)
+        b_inv = F(1) / b
+        return a * b_inv
+
     def __req__(b: ToAExpr, a: ToAExpr) -> LExpr:
         return AExpr.__eq__(a, b)
 
@@ -187,8 +222,41 @@ class AExpr:
         (a, b) = (to_aexpr(a), to_aexpr(b))
         return LExpr(Neq(AExprPair(a, b)))
 
-    # def type_eval(self) -> ()
-    # TODO
+    def type_eval(self) -> Tuple[StaticBound, bool]:
+        match self.e:
+            case Neg(e):
+                (bound, overflow) = e.type_eval()
+                a = F(0) - bound.interval[0]
+                b = F(0) - bound.interval[1]
+                if a.n > b.n:
+                    a, b = b, a
+                return (StaticBound(a, b), overflow)
+            case Pow(e, p):
+                if p == 0:
+                    return (StaticBound(1, 1), False)
+                (bound, overflow) = e.type_eval()
+                for _ in range(1, p):
+                    (bound, o) = bound * bound
+                    overflow = overflow | o
+                return (bound, overflow)
+            case Const(c):
+                return (StaticBound(c, c), False)
+            case AVar(v):
+                return (v.signals[v.id].inferred, False)
+            case Sum(es):
+                (bound, overflow) = es[0].type_eval()
+                for e in es[1:]:
+                    (b, o1) = e.type_eval()
+                    (bound, o2) = bound + b
+                    overflow = overflow | o1 | o2
+                return (bound, overflow)
+            case Mul(es):
+                (bound, overflow) = es[0].type_eval()
+                for e in es[1:]:
+                    (b, o1) = e.type_eval()
+                    (bound, o2) = bound * b
+                    overflow = overflow | o1 | o2
+                return (bound, overflow)
 
     def eval(self, vars: SupportsEval) -> F:
         match self.e:
@@ -236,13 +304,7 @@ class AExpr:
             case Pow(e, p):
                 return fmt_exp(e) + f"^{p}"
             case Const(c):
-                c_bin = bin(c.n)[2:]
-                if len(c_bin) >= 8 and c_bin.count("1") == 1:
-                    return f"2^{len(c_bin)-1}"
-                elif len(c_bin) >= 16:
-                    return f"0x{c.n:02x}"
-                else:
-                    return f"{c}"
+                return f_fmt_ascii(c)
             case AVar(_) as e:
                 return e.fmt_ascii()
             case Sum(es):
@@ -344,6 +406,29 @@ class LExpr:
                 return v
             case _:
                 return None
+
+    def vars(self) -> List[Any]:
+        match self.e:
+            case LVar(v):
+                return [v]
+            case And(es):
+                return list(chain(*[e.vars() for e in es]))
+            case Or(es):
+                return list(chain(*[e.vars() for e in es]))
+            case Not(e):
+                return e.vars()
+            case Eq(pair):
+                match pair:
+                    case AExprPair(lhs, rhs):
+                        return lhs.vars() + rhs.vars()
+                    case LExprPair(lhs, rhs):
+                        return lhs.vars() + rhs.vars()
+            case Neq(pair):
+                match pair:
+                    case AExprPair(lhs, rhs):
+                        return lhs.vars() + rhs.vars()
+                    case LExprPair(lhs, rhs):
+                        return lhs.vars() + rhs.vars()
 
     def __eq__(a: LExpr, b: LExpr) -> LExpr:  # type: ignore
         """called with `==`"""
@@ -449,12 +534,36 @@ class LExpr:
 
 
 @dataclass
+class RangeCheck:
+    e: AVar
+    bound: StaticBound
+
+    def __str__(self) -> str:
+        return f"{self.e.fmt_ascii()} in {self.bound}"
+
+
+@dataclass
 class Assert:
-    s: Cond | LExpr
+    s: Cond | LExpr | RangeCheck
     frame: Optional[inspect.FrameInfo] = None
 
     def __str__(self: Assert) -> str:
         return self.s.__str__()
+
+    def vars(self) -> List[Any]:
+        match self.s:
+            case Cond(c):
+                match c:
+                    case If(cond, true_e):
+                        return cond.vars() + true_e.vars()
+                    case IfElse(cond, true_e, false_e):
+                        return cond.vars() + true_e.vars() + false_e.vars()
+                    case Switch(_, _):
+                        raise NotImplementedError
+            case LExpr(_) as e:
+                return e.vars()
+            case RangeCheck(v, _):
+                return [v]
 
     def verify(self, vars: SupportsEval) -> bool:
         match self.s:
@@ -462,6 +571,9 @@ class Assert:
                 return a.verify(vars)
             case LExpr(_) as e:
                 return e.eval(vars)
+            case RangeCheck(_v, bound):
+                v: F = vars.var_eval(_v)
+                return bound.interval[0].n <= v.n and v.n <= bound.interval[1].n
 
 
 @dataclass
@@ -581,13 +693,23 @@ class StaticBound:
             overflow = True
         return StaticBound(start_f, end_f), overflow
 
+    def overlap(self: StaticBound, other: StaticBound) -> bool:
+        start = max(self.interval[0].n, other.interval[0].n)
+        end = min(self.interval[1].n, other.interval[1].n)
+        update = self.interval[0].n != start or self.interval[1].n != end
+        self.interval = (F(start), F(end))
+        return update
+
+    def __str__(self) -> str:
+        start = f_fmt_ascii(self.interval[0])
+        end = f_fmt_ascii(self.interval[1])
+        return f"[{start}, {end}]"
+
 
 @dataclass
 class Type:
     name: str
     t: StaticBound
-    inferred: bool = False
-    force: bool = False
 
     @classmethod
     def Bound(cls, start: int | F, end: int | F, name: Optional[str] = None):
@@ -599,17 +721,25 @@ class Type:
     def Any(cls):
         return cls("Any", StaticBound(F(0), F(-1)))
 
-    def forced(self) -> Type:
-        return Type(self.name, self.t, force=True)
+
+DefaultBound = StaticBound(F(0), F(-1))
 
 
-@dataclass
 class Signal:
     name: str
     fullname: str
     frame: inspect.FrameInfo
     type: Optional[Type] = None
+    inferred: StaticBound = DefaultBound
     logical: bool = False
+
+    def __init__(self, name: str, fullname: str, frame: inspect.FrameInfo, type: Optional[Type] = None, inferred: StaticBound = DefaultBound, logical: bool = False) -> Signal:
+        self.name = name
+        self.fullname = fullname
+        self.frame = frame
+        self.type = type
+        self.inferred = deepcopy(inferred)
+        self.logical = logical
 
     def fmt_ascii(self) -> str:
         return self.name
@@ -624,23 +754,21 @@ class SignalId:
         return self.signals[self.id].fullname
 
 
-InputOutput = AExpr | LExpr | List[AExpr | LExpr] | SupportsVars
+InputOutput = AVar | LVar | List[AVar | LVar] | SupportsVars
 
 
 def io_list(io: InputOutput) -> List[AVar | LVar]:
-    result: List[AExpr | LExpr] = []
+    result: List[AVar | LVar] = []
     match io:
-        case AExpr(_) as v:
+        case AVar(_) as v:
             result = [v]
-        case LExpr(_) as v:
+        case LVar(_) as v:
             result = [v]
         case [*_] as vs:
             result = vs
         case _:
             result = io.vars()
-    for v in result:
-        assert v.is_var()
-    return [v.as_var() for v in result]
+    return result
 
 
 class IO(Enum):
@@ -694,6 +822,9 @@ class Component:
     def outputs_signal_ids(self) -> List[int]:
         return [s1.id for s1 in list(chain(*[io_list(s) for s in self.outputs]))]
 
+    def parent_inputs_signal_ids(self) -> List[int]:
+        return [s1.id for s1 in list(chain(*[io_list(s) for s in self.parent_inputs]))]
+
     def unique_name(self, name: str, names: Dict[str, int]) -> str:
         sufix = ""
         if name in names:
@@ -717,6 +848,8 @@ class Component:
         assert self.state == ComponentState.STARTED
         if name is None:
             name = varname(strict=False)
+        if type is not None:
+            type = deepcopy(type)
         name = self.unique_signal_name(name)
         signal = Signal(name, f"{self.fullname}.{name}", inspect.stack()[1], type=type)
         self.signals.append(signal)
@@ -745,7 +878,7 @@ class Component:
         self.outputs.append(signals)
         return signals
 
-    def Eq(self, signal: AExpr | LExpr, e: AExpr | LExpr) -> Assert:
+    def Eq(self, signal: AExpr | LExpr, e: AExpr | LExpr) -> AExpr | LExpr:
         assert self.state == ComponentState.STARTED
         if isinstance(signal, AExpr):
             assert signal.is_var(), f"`{signal}` is not a AVar"
@@ -755,6 +888,16 @@ class Component:
             assert signal.is_var(), f"`{signal}` is not a LVar"
             assert isinstance(e, LExpr)
             a = Assert(signal == e, inspect.stack()[1])
+        self.asserts.append(a)
+        return signal
+
+    def Range(self, e: AExpr, bound: StaticBound) -> Assert:
+        assert self.state == ComponentState.STARTED
+        assert e.is_var(), f"`{e}` is not a AVar"
+        v = e.as_var()
+        bound = deepcopy(bound)
+        r = RangeCheck(v, bound)
+        a = Assert(r, inspect.stack()[1])
         self.asserts.append(a)
         return a
 
@@ -790,3 +933,140 @@ class Component:
         fn(self)
         for child in self.children:
             child.walk(fn)
+
+    def type_check(self):
+        print("Type check")
+        # Assume input types are satisfied
+        print("# Inputs")
+        for id in self.inputs_signal_ids():
+            signal = self.signals[id]
+            if signal.type is not None:
+                signal.inferred.overlap(signal.type.t)
+                print(f"- Assume {signal.fullname} is {signal.inferred}")
+
+        # Infer from range checks
+        print("# RangeChecks")
+        for a in self.asserts:
+            r = None
+            match a.s:
+                case RangeCheck(_, _) as check:
+                    r = check
+                case _:
+                    continue
+            signal = self.signals[r.e.id]
+            signal.inferred.overlap(r.bound)
+            print(f"- Range {signal.fullname} is {signal.inferred}")
+
+        # Propagate
+        print("# Inferred")
+        while True:
+            updates = 0
+            for a in self.asserts:
+                (lhs, rhs) = (None, None)
+                match a.s:
+                    case LExpr(Eq(AExprPair(_lhs, _rhs))):
+                        (lhs, rhs) = (_lhs, _rhs)
+                    case _:
+                        continue
+                (rhs_bound, rhs_overflow) = rhs.type_eval()
+                if lhs.is_var():
+                    signal_id = lhs.as_var()
+                    signal = self.signals[signal_id.id]
+                    if signal.inferred.overlap(rhs_bound):
+                        updates += 1
+                        print(f"- Range {signal.fullname} is {signal.inferred}")
+            if updates == 0:
+                break
+
+        print("# Overflows")
+        for a in self.asserts:
+            (lhs, rhs) = (None, None)
+            match a.s:
+                case LExpr(Eq(AExprPair(_lhs, _rhs))):
+                    (lhs, rhs) = (_lhs, _rhs)
+                case _:
+                    continue
+            (rhs_bound, rhs_overflow) = rhs.type_eval()
+            rhs_str = f"{rhs}".replace(f"{self.fullname}.", "")
+            (lhs_bound, lhs_overflow) = lhs.type_eval()
+            lhs_str = f"{lhs}".replace(f"{self.fullname}.", "")
+            if rhs_overflow:
+                print(f" - Overflow in {rhs_str}")
+            if lhs_overflow:
+                print(f" - Overflow in {lhs_str}")
+
+
+def dump(x: Component):
+    def _dump(x: Component):
+        print(f"# {x.fullname}\n")
+        for id in x.signal_ids:
+            signal = x.signals[id]
+            type = ""
+            io = ""
+            inputs = x.inputs_signal_ids()
+            outputs = x.outputs_signal_ids()
+            if signal.logical:
+                type = " logical"
+            elif signal.type is not None:
+                type = f" {signal.type.name}"
+            if id in inputs:
+                io = " in"
+            elif id in outputs:
+                io = " out"
+            print(f"signal{io}{type} {x.signals[id].fullname}")
+        print()
+        for a in x.asserts:
+            print(a)
+        print()
+
+    x.walk(_dump)
+
+
+def graph(x: Component):
+    def _print(i, str):
+        print("  " * i + str)
+
+    def name(x: Component, signal_id: int) -> str:
+        signal = x.signals[signal_id]
+        return signal.fullname.replace(".", "_")
+
+    def _graph(x: Component, lvl: int):
+        for (parent_id, id) in zip(x.parent_inputs_signal_ids(), x.inputs_signal_ids()):
+            parent_fullname = name(x, parent_id)
+            fullname = name(x, id)
+            _print(lvl, f"{parent_fullname} -> {fullname};")
+        fullname = x.fullname.replace(".", "_")
+        _print(lvl, f"subgraph cluster_{fullname} {{")
+        _print(lvl+1, f"label=\"{x.name}\";")
+
+        inputs = x.inputs_signal_ids()
+        outputs = x.outputs_signal_ids()
+        assert_id = 0
+        for id in x.signal_ids:
+            prop = ""
+            if id in inputs:
+                prop = ",color=green"
+            elif id in outputs:
+                prop = ",color=orange"
+            fullname = name(x, id)
+            _print(lvl+1, f"{fullname}[label=\"{x.signals[id].name}\"{prop}];")
+        for a in x.asserts:
+            assert_name = f"assert_{fullname}{assert_id}"
+            a_str = f"{a}"
+            a_str = a_str.replace(f"{x.fullname}.", "")
+            _print(lvl+1, f"{assert_name}[shape=rectangle,label=\"{a_str}\"];")
+            assert_id += 1
+            vars = a.vars()
+            for var in vars:
+                var_name = name(x, var.id)
+                _print(lvl+1, f"{var_name} -> {assert_name};")
+
+        for child in x.children:
+            _graph(child, lvl+1)
+        _print(lvl, "}")
+
+    print("")
+    print("digraph G {")
+    print("  rankdir = \"LR\";")
+    _graph(x, 1)
+    print("}")

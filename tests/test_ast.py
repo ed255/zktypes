@@ -113,11 +113,28 @@ class Word:
         l1 = x.Signal(TypeU64, name=f"{self.name}_1")
         l2 = x.Signal(TypeU64, name=f"{self.name}_2")
         l3 = x.Signal(TypeU64, name=f"{self.name}_3")
-        for l in [l0, l1, l2, l3]:
-            x.Range(l, TypeU64.t)
+        for limb in [l0, l1, l2, l3]:
+            x.Range(limb, TypeU64.t)
         x.Eq(self.lo, l0 + l1 * 2**64)
         x.Eq(self.hi, l2 + l3 * 2**64)
         return [l0, l1, l2, l3]
+
+
+def WordTo64BitLimbs(x: Component, name: str) -> Component:
+    # x = x.Sub("WordTo64BitLimbs")
+    x = x.Sub(name)
+
+    w = x.In(Word(x))
+    l0 = x.Out(x.Signal(TypeU64))
+    l1 = x.Out(x.Signal(TypeU64))
+    l2 = x.Out(x.Signal(TypeU64))
+    l3 = x.Out(x.Signal(TypeU64))
+    for limb in [l0, l1, l2, l3]:
+        x.Range(limb, TypeU64.t)
+    x.Eq(w.lo, l0 + l1 * 2**64)
+    x.Eq(w.hi, l2 + l3 * 2**64)
+
+    return x.Finalize()
 
 
 def Add256(x: Component) -> Component:
@@ -176,20 +193,31 @@ def MulAddWord(x: Component) -> Component:
     b = x.In(Word(x))
     c = x.In(Word(x))
     d = x.Out(Word(x))
+    x.Range(d.lo, TypeU128.t)
+    x.Range(d.hi, TypeU128.t)
     has_overflow = x.Out(x.LSignal())
 
-    a64s = a.to_64bit_limbs(x)
-    b64s = b.to_64bit_limbs(x)
+    # a64s = a.to_64bit_limbs(x)
+    # b64s = b.to_64bit_limbs(x)
+    a64s = WordTo64BitLimbs(x, "a").Connect([a])
+    b64s = WordTo64BitLimbs(x, "b").Connect([b])
 
     TypeU132 = Type.Bound(0, F(2**123-1))
     t0 = x.Eq(x.Signal(TypeU132), a64s[0] * b64s[0])
     t1 = x.Eq(x.Signal(TypeU132), a64s[0] * b64s[1] + a64s[1] * b64s[0])
     t2 = x.Eq(x.Signal(TypeU132), a64s[0] * b64s[2] + a64s[1] * b64s[1] + a64s[2] * b64s[0])
     t3 = x.Eq(x.Signal(TypeU132), a64s[0] * b64s[3] + a64s[1] * b64s[2] + a64s[2] * b64s[1] + a64s[3] * b64s[0])
+
     carry_lo = x.Signal(Type9B)
     carry_hi = x.Signal(Type9B)
+    # range check for carries
+    x.Range(carry_lo, Type9B.t)
+    x.Range(carry_hi, Type9B.t)
     x.Eq(d.lo, t0 + t1 * 2**64 + c.lo - carry_lo * 2**128)
     x.Eq(d.hi, carry_lo + t2 + t3 * 2**64 + c.hi - carry_hi * 2**128)
+    # x.Assert(d.lo + carry_lo * 2**128 == t0 + t1 * 2**64 + c.lo)
+    # x.Assert(d.hi + carry_hi * 2**128 == carry_lo + t2 + t3 * 2**64 + c.hi)
+
     overflow = x.Eq(
             x.Signal(),
             carry_hi
@@ -202,12 +230,8 @@ def MulAddWord(x: Component) -> Component:
     )
     x.Eq(has_overflow, overflow != 0)
 
-    # range check for carries
-    x.Range(carry_lo, Type9B.t)
-    x.Range(carry_hi, Type9B.t)
-
-    x.Assert(t0 + t1 * (2**64) + c.lo == d.lo + carry_lo * (2**128))
-    x.Assert(t2 + t3 * (2**64) + c.hi + carry_lo == d.hi + carry_hi * (2**128))
+    # x.Assert(t0 + t1 * (2**64) + c.lo == d.lo + carry_lo * (2**128))
+    # x.Assert(t2 + t3 * (2**64) + c.hi + carry_lo == d.hi + carry_hi * (2**128))
 
     return x.Finalize()
 

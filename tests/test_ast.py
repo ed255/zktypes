@@ -1,6 +1,6 @@
 from zktypes.ast import AExpr, AVar, F, Cond, If, IfElse, Assert, StrVar, Component, LExpr, Type, LVar, io_list, graph, dump
 from varname import varname  # type: ignore
-from typing import  Optional, Tuple, List
+from typing import  Optional, Tuple, List, Any
 
 
 def var(s: str) -> AExpr:
@@ -94,12 +94,12 @@ def IsZero(x: Component) -> Component:
 
 
 class Word:
-    lo: AExpr
-    hi: AExpr
+    lo: AVar
+    hi: AVar
     name: str
 
-    def vars(self) -> List[AVar | LVar]:
-        return [self.lo.as_var(), self.hi.as_var()]
+    def vars(self) -> List[Any]:
+        return [self.lo.v, self.hi.v]
 
     def __init__(self, x: Component, name: Optional[str] = None):
         if name is None:
@@ -108,7 +108,7 @@ class Word:
         self.lo = x.Signal(TypeU128, name=f"{name}_lo")
         self.hi = x.Signal(TypeU128, name=f"{name}_hi")
 
-    def to_64bit_limbs(self, x: Component) -> List[AExpr]:
+    def to_64bit_limbs(self, x: Component) -> List[AVar]:
         l0 = x.Signal(TypeU64, name=f"{self.name}_0")
         l1 = x.Signal(TypeU64, name=f"{self.name}_1")
         l2 = x.Signal(TypeU64, name=f"{self.name}_2")

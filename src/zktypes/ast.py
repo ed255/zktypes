@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from math import ceil
 from functools import reduce
 from itertools import chain
 from enum import Enum, auto
@@ -269,10 +270,7 @@ class AExpr:
     def type_eval(self) -> StaticBound:
         match self.e:
             case Neg(e):
-                bound = e.type_eval()
-                end = -bound.interval[0]
-                start = -bound.interval[1]
-                return StaticBound(start, end)
+                return -e.type_eval()
             case Pow(e, p):
                 if p == 0:
                     return StaticBound(1, 1)
@@ -624,6 +622,7 @@ class RangeCheck:
 @dataclass
 class Assert:
     s: Cond | LExpr | RangeCheck
+    id: int = -1
     frame: Optional[inspect.FrameInfo] = None
 
     def __str__(self: Assert) -> str:
@@ -652,7 +651,9 @@ class Assert:
                 return e.eval(vars)
             case RangeCheck(_v, bound):
                 v: F = vars.var_eval(_v)
-                return bound.interval[0] <= v.n and v.n <= bound.interval[1]
+                assert len(bound.intervals) == 1
+                interval = bound.intervals[0]
+                return interval[0] <= v.n and v.n <= interval[1]
 
 
 @dataclass
@@ -753,9 +754,12 @@ def to_lexpr(v: ToLExpr) -> LExpr:
         raise ValueError(f"type `{type(v)}` is not ToLExpr")
 
 
+q = F(-1).n + 1
+
+
 class StaticBound:
     """Bound an expression between [interval[0], interval[1]]"""
-    interval: Tuple[int, int]
+    intervals: List[Tuple[int, int]]
 
     def __init__(self, start: int | F, end: int | F):
         if isinstance(start, F):
@@ -763,36 +767,140 @@ class StaticBound:
         if isinstance(end, F):
             end = end.n
         assert start <= end
-        self.interval = (start, end)
+        self.intervals = [(start, end)]
+
+    @classmethod
+    def from_intervals(cls, intervals: List[Tuple[int, int]]) -> StaticBound:
+        bound = StaticBound(0, 0)
+        bound.intervals = intervals
+        return bound
 
     @classmethod
     def default(cls) -> StaticBound:
         return StaticBound(F(0), F(-1))
 
     def overflow(self) -> bool:
-        return self.interval[0] < 0 or self.interval[1] > F(-1).n
+        for interval in self.intervals:
+            if interval[0] < 0 or interval[1] > F(-1).n:
+                return True
+        return False
 
     def __add__(a: StaticBound, b: StaticBound) -> StaticBound:
-        start = a.interval[0] + b.interval[0]
-        end = a.interval[1] + b.interval[1]
-        return StaticBound(start, end)
+        intervals = []
+        for interval_a in a.intervals:
+            for interval_b in b.intervals:
+                start = interval_a[0] + interval_b[0]
+                end = interval_a[1] + interval_b[1]
+                intervals.append((start, end))
+        return StaticBound.from_intervals(intervals)._clean()
 
     def __mul__(a: StaticBound, b: StaticBound) -> StaticBound:
-        start = a.interval[0] * b.interval[0]
-        end = a.interval[1] * b.interval[1]
-        return StaticBound(start, end)
+        intervals = []
+        for interval_a in a.intervals:
+            for interval_b in b.intervals:
+                start = interval_a[0] * interval_b[0]
+                end = interval_a[1] * interval_b[1]
+                intervals.append((start, end))
+        return StaticBound.from_intervals(intervals)._clean()
 
-    def overlap(self: StaticBound, other: StaticBound) -> bool:
-        start = max(self.interval[0], other.interval[0])
-        end = min(self.interval[1], other.interval[1])
-        update = self.interval[0] != start or self.interval[1] != end
-        self.interval = (start, end)
-        return update
+    def __neg__(self: StaticBound) -> StaticBound:
+        intervals = []
+        for interval_a in self.intervals:
+            end = -interval_a[0]
+            start = -interval_a[1]
+            intervals.append((start, end))
+        intervals = list(reversed(intervals))
+        return StaticBound.from_intervals(intervals)._clean()
+
+    def _clean(self: StaticBound) -> StaticBound:
+        new = [self.intervals[0]]
+        for interval in self.intervals[1:]:
+            if interval[1] < interval[0]:
+                raise ValueError(f"Inverted interval {interval}")
+            # If next interval overlaps previous one, merge them
+            if interval[0] < new[-1][1]:
+                new[-1] = (new[-1][0], interval[1])
+            else:
+                new.append(interval)
+        new2 = []
+        for interval in new:
+            # Discard intervals outside of [- 2 * q, 3 * q - 1]
+            # Clip intervals that overlap [- 2 * q, 3 * q - 1]
+            if interval[1] < - 2 * q:
+                continue
+            elif interval[0] >= 3 * q - 1:
+                continue
+            elif interval[0] < - 2 * q:
+                interval = (-2 * q, interval[1])
+            elif interval[1] >= 3 * q - 1:
+                interval = (interval[0], 3 * q - 1)
+            new2.append(interval)
+        self.intervals = new2
+        return self
+
+
+    def overlap(self: StaticBound, other: StaticBound) -> Tuple[StaticBound, bool]:
+        # print(f"Begin overlap between {self} and {other}")
+        if self.intervals == other.intervals:
+            return self, False
+
+        def cycle(a: Tuple[int, int], n: int) -> Tuple[int, int]:
+            return (a[0] + n * q, a[1] + n * q)
+
+        def overlap_intervals(a: Tuple[int, int], b: Tuple[int, int]) -> Tuple[int, int]:
+            start = max(a[0], b[0])
+            end = min(a[1], b[1])
+            return (start, end)
+
+        intervals = []
+        for interval_a in self.intervals:
+            for interval_b in other.intervals:
+                a = cycle(interval_a, int(-ceil(interval_b[0] - interval_a[0])/q))
+                while True:
+                    overlap = overlap_intervals(a, interval_b)
+                    if overlap[0] <= overlap[1]:
+                        intervals.append(overlap)
+                        # print(f"DBG A {overlap}")
+                    a = cycle(a, 1)
+                    if a[0] > interval_b[1]:
+                        break
+        for interval_a in other.intervals:
+            for interval_b in self.intervals:
+                a = cycle(interval_a, int(-ceil(interval_b[0] - interval_a[0])/q))
+                while True:
+                    overlap = overlap_intervals(a, interval_b)
+                    if overlap[0] <= overlap[1]:
+                        intervals.append(overlap)
+                        # print(f"DBG B {overlap}")
+                    a = cycle(a, 1)
+                    if a[0] > interval_b[1]:
+                        break
+        # print(f"DBG C {intervals}")
+        intervals.sort(key=lambda interval: interval[0])
+        new = StaticBound.from_intervals(intervals)
+        new._clean()
+        update = self.intervals != new.intervals
+        # if update:
+        #     print(f"DBG {self.intervals} -> {new.intervals}")
+        return (new, update)
+
+    def type_check(self, type: StaticBound) -> bool:
+        assert len(type.intervals) == 1
+        type_interval = type.intervals[0]
+        for interval in self.intervals:
+            if interval[0] < type_interval[0] or interval[1] > type_interval[1]:
+                return False
+        return True
 
     def __str__(self) -> str:
-        start = i_fmt_ascii(self.interval[0])
-        end = i_fmt_ascii(self.interval[1])
-        return f"[{start}, {end}]"
+        s = ""
+        for (i, interval) in enumerate(self.intervals):
+            if i != 0:
+                s += ", "
+            start = i_fmt_ascii(interval[0])
+            end = i_fmt_ascii(interval[1])
+            s += f"[{start}, {end}]"
+        return f"{{{s}}}"
 
 
 @dataclass
@@ -877,6 +985,72 @@ class Common:
 
 
 @dataclass
+class AssignmentComponent:
+    component: Component
+
+
+@dataclass
+class AssignmentEq:
+    assert_id: int
+
+
+@dataclass
+class AssignmentManual:
+    signal_id: int
+    fn: Any
+
+
+@dataclass
+class Assignment:
+    a: AssignmentComponent | AssignmentEq | AssignmentManual
+
+
+@dataclass
+class VarNotFoundError(Exception):
+    v: Any
+
+
+@dataclass
+class Vars:
+    """Hold variable assignments by id, resolve them by SignalRef.  Implements SupportsEval"""
+    var_map: Dict[int, F] = field(default_factory=dict)
+    lvar_map: Dict[int, bool] = field(default_factory=dict)
+
+    def set(self, signal: Signal, value: bool | int | F):
+        if signal.logical:
+            assert isinstance(value, bool)
+            self.lvar_map[signal.id] = value
+        else:
+            if isinstance(value, int):
+                value = F(value)
+            assert isinstance(value, F)
+            self.var_map[signal.id] = value
+
+    def var_eval(self, signal_ref: Any) -> F:
+        assert isinstance(signal_ref, SignalRef)
+        try:
+            return self.var_map[signal_ref.id]
+        except KeyError:
+            raise VarNotFoundError(signal_ref.id)
+
+    def lvar_eval(self, signal_ref: Any) -> bool:
+        assert isinstance(signal_ref, SignalRef)
+        try:
+            return self.lvar_map[signal_ref.id]
+        except KeyError:
+            raise VarNotFoundError(signal_ref.id)
+
+    def eval(self, signal: Signal) -> bool | F:
+        try:
+            if signal.logical:
+                return self.lvar_map[signal.id]
+            else:
+                return self.var_map[signal.id]
+        except KeyError:
+            raise VarNotFoundError(signal.id)
+
+
+@dataclass
 class Component:
     """Circuit Component"""
 
@@ -893,6 +1067,7 @@ class Component:
     outputs: List[InputOutput] = field(default_factory=list)
     state: ComponentState = ComponentState.STARTED
     parent_inputs: List[InputOutput] = field(default_factory=list)
+    assignments: List[Assignment] = field(default_factory=list)
 
     @classmethod
     def main(cls):
@@ -975,6 +1150,7 @@ class Component:
 
     def _push_assert(self, a: Assert):
         id = len(self.com.asserts)
+        a.id = id
         self.com.asserts.append(a)
         self.assert_ids.append(id)
 
@@ -982,24 +1158,25 @@ class Component:
         assert self.state == ComponentState.STARTED
         if isinstance(signal, AVar):
             assert isinstance(e, AExpr)
-            a = Assert(signal == e, inspect.stack()[1])
+            a = Assert(signal == e, frame=inspect.stack()[1])
         elif isinstance(signal, LVar):
             assert isinstance(e, LExpr)
-            a = Assert(signal == e, inspect.stack()[1])
+            a = Assert(signal == e, frame=inspect.stack()[1])
         self._push_assert(a)
+        self.assignments.append(Assignment(AssignmentEq(a.id)))
         return signal
 
     def Range(self, signal: AVar, bound: StaticBound) -> Assert:
         assert self.state == ComponentState.STARTED
         bound = deepcopy(bound)
         r = RangeCheck(signal, bound)
-        a = Assert(r, inspect.stack()[1])
+        a = Assert(r, frame=inspect.stack()[1])
         self._push_assert(a)
         return a
 
     def Assert(self, s: Cond | LExpr) -> Assert:
         assert self.state == ComponentState.STARTED
-        a = Assert(s, inspect.stack()[1])
+        a = Assert(s, frame=inspect.stack()[1])
         self._push_assert(a)
         return a
 
@@ -1023,7 +1200,70 @@ class Component:
             assert isinstance(parent_input, type(self.inputs[i]))
         self.state = ComponentState.CONNECTED
         self.parent_inputs = inputs
+        assert self.parent is not None
+        self.parent.assignments.append(Assignment(AssignmentComponent(self)))
         return self.outputs
+
+    def Assign(self, signal: AVar, fn: Callable[Callable[[AExpr], F], F | int]):
+        self.assignments.append(Assignment(AssignmentManual(signal.v.id, fn)))
+
+    def _witness_calc(self, vars: Vars):
+        # print(f"DBG {self.assignments}")
+        for assignment in self.assignments:
+            match assignment.a:
+                case AssignmentEq(assert_id):
+                    a = self.com.asserts[assert_id]
+                    (lhs, rhs) = (None, None)
+                    match a.s:
+                        case LExpr(Eq(AExprPair(_lhs, _rhs))):
+                            (lhs, rhs) = (_lhs, _rhs)
+                        case LExpr(Eq(LExprPair(_lhs, _rhs))):
+                            (lhs, rhs) = (_lhs, _rhs)
+                        case _:
+                            raise ValueError
+                    if lhs.is_var():
+                        signal_ref = lhs.as_var()
+                        signal = self.com.signals[signal_ref.id]
+                        try:
+                            rhs_eval = rhs.eval(vars)
+                        except VarNotFoundError as e:
+                            print(f"VarNotFound {self.com.signals[e.v].fullname} in \"{rhs}\"")
+                            if a.frame is not None:
+                                code = '\n'.join(a.frame.code_context)
+                                print(f"> {a.frame.filename}:{a.frame.lineno}\n{code}")
+                            raise e
+                        vars.set(signal, rhs_eval)
+                    else:
+                        raise ValueError
+                case AssignmentComponent(component):
+                    for (signal_parent, signal_child) in zip(component.parent_inputs_signal_iter(), component.input_signals_iter()):
+                        try:
+                            signal_value = vars.eval(signal_child)
+                        except VarNotFoundError as e:
+                            print(f"VarNotFound {self.com.signals[e.v].fullname} in connect to {component.fullname}")
+                            # TODO: Save frame in Connect and print it here
+                            raise e
+                        vars.set(signal_child, signal_value)
+                    component._witness_calc(vars)
+                case AssignmentManual(signal_id, fn):
+                    try:
+                        signal_value = fn(lambda avar: vars.var_eval(avar.v))
+                        if isinstance(signal_value, int):
+                            signal_value = F(signal_value)
+                    except VarNotFoundError as e:
+                        print(f"VarNotFound {self.com.signals[e.v].fullname} in Assign")
+                        # TODO: Save frame in Assign and print it here
+                        raise e
+                    vars.set(self.com.signals[signal_id], signal_value)
+
+
+    def WitnessCalc(self, inputs: List[bool | int | F]) -> Vars:
+        vars = Vars()
+        for (i, signal) in enumerate(self.input_signals_iter()):
+            vars.set(signal, inputs[i])
+        self._witness_calc(vars)
+
+        return vars
 
     def walk(self, fn: Callable[[Component], None]):
         fn(self)
@@ -1032,8 +1272,8 @@ class Component:
 
     # def verify(self, inputs: List[int | F]):
     #     vars = {}
-    #     for signal_
-    #     input_signal_ids = signal.inputs_signal_ids()
+    #     for (i, signal) in enumerate(self.input_signals_iter()):
+    #         vars[signal.id] = inputs[i]
     #     for child in self.children:
     #         child.walk(fn)
     #     fn(self)
@@ -1045,7 +1285,7 @@ class Component:
         print("# Inputs")
         for signal in self.input_signals_iter():
             if signal.type is not None:
-                signal.inferred.overlap(signal.type.t)
+                signal.inferred, _ = signal.inferred.overlap(signal.type.t)
                 print(f"- Assume {signal.fullname} is {signal.inferred}")
 
         # Assume outputs of sub-components types are satisied
@@ -1053,7 +1293,7 @@ class Component:
         for sub in self.children:
             for signal in sub.output_signals_iter():
                 if signal.type is not None:
-                    signal.inferred.overlap(signal.type.t)
+                    signal.inferred, _ = signal.inferred.overlap(signal.type.t)
                     print(f"- Assume {signal.fullname} is {signal.inferred}")
 
         # Infer from range checks
@@ -1062,7 +1302,7 @@ class Component:
             match a.s:
                 case RangeCheck(var, bound):
                     signal = self.com.signals[var.v.id]
-                    signal.inferred.overlap(bound)
+                    signal.inferred, _ = signal.inferred.overlap(bound)
                     print(f"- Range {signal.fullname} is {signal.inferred}")
                 case _:
                     continue
@@ -1082,28 +1322,42 @@ class Component:
                 if lhs.is_var():
                     signal_ref = lhs.as_var()
                     signal = self.com.signals[signal_ref.id]
-                    if signal.inferred.overlap(rhs_bound):
+                    signal.inferred, update = signal.inferred.overlap(rhs_bound)
+                    if signal.fullname == "main.mulAddWord.d_hi":
+                        print(f" - DBG {rhs_bound} -> {signal.inferred}")
+                    if update:
                         updates += 1
                         print(f"- Range {signal.fullname} is {signal.inferred}")
             if updates == 0:
                 break
 
         print("# Overflows")
-        for a in self.com.asserts:
-            (lhs, rhs) = (None, None)
-            match a.s:
-                case LExpr(Eq(AExprPair(_lhs, _rhs))):
-                    (lhs, rhs) = (_lhs, _rhs)
-                case _:
-                    continue
-            rhs_bound = rhs.type_eval()
-            rhs_str = f"{rhs}".replace(f"{self.fullname}.", "")
-            lhs_bound = lhs.type_eval()
-            lhs_str = f"{lhs}".replace(f"{self.fullname}.", "")
-            if rhs_bound.overflow():
-                print(f" - Overflow {rhs_bound} in {rhs_str}")
-            if lhs_bound.overflow():
-                print(f" - Overflow {lhs_bound} in {lhs_str}")
+        # for a in self.com.asserts:
+        #     (lhs, rhs) = (None, None)
+        #     match a.s:
+        #         case LExpr(Eq(AExprPair(_lhs, _rhs))):
+        #             (lhs, rhs) = (_lhs, _rhs)
+        #         case _:
+        #             continue
+        #     rhs_bound = rhs.type_eval()
+        #     rhs_str = f"{rhs}".replace(f"{self.fullname}.", "")
+        #     lhs_bound = lhs.type_eval()
+        #     lhs_str = f"{lhs}".replace(f"{self.fullname}.", "")
+        #     overlap, _ = rhs_bound.overlap(lhs_bound)
+        #     if overlap.overflow():
+        #         print(f" - Overflow {rhs_str} == {lhs_str}")
+        for signal in self.signals_iter():
+            # print(f" - Signal {signal.fullname} {signal.inferred}")
+            if signal.inferred.overflow():
+                print(f" - Overflow of {signal.fullname}")
+
+        print("# Type checks")
+        for signal in self.signals_iter():
+            type = signal.type
+            if type is None:
+                continue
+            if not signal.inferred.type_check(type.t):
+                print(f" - Signal {signal.fullname} type '{type.name}':{type.t} not satisfied by {signal.inferred}")
 
 
 def dump(x: Component):

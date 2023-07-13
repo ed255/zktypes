@@ -185,6 +185,28 @@ def test_component():
     graph(x)
 
 
+def AddWord(x: Component) -> Component:
+    """c = a + b"""
+    x = x.Sub("addWord")
+    a = x.In(Word(x))
+    b = x.In(Word(x))
+    c = x.Out(Word(x))
+
+    TypeCarry = Type.Bound(0, 1)
+    carry_lo = x.Signal(TypeCarry)
+    carry_hi = x.Out(x.Signal(TypeCarry))
+
+    x.Assign(carry_lo, lambda v: (v(a.lo).n + v(b.lo).n) // 2**128)
+    x.Assign(carry_hi, lambda v: (v(a.hi).n + v(b.hi).n) // 2**128)
+
+    x.Eq(c.lo, a.lo + b.lo - carry_lo * 2**128)
+    x.Eq(c.hi, carry_lo + a.hi + b.hi - carry_hi * 2**128)
+    x.Range(carry_lo, TypeCarry.t)
+    x.Range(carry_hi, TypeCarry.t)
+
+    return x.Finalize()
+
+
 def MulAddWord(x: Component) -> Component:
     """d = a * b + c"""
     x = x.Sub("mulAddWord")
@@ -202,7 +224,7 @@ def MulAddWord(x: Component) -> Component:
     a64s = WordTo64BitLimbs(x, "a").Connect([a])
     b64s = WordTo64BitLimbs(x, "b").Connect([b])
 
-    TypeU132 = Type.Bound(0, F(2**123-1))
+    TypeU132 = Type.Bound(0, 2**132-1)
     t0 = x.Eq(x.Signal(TypeU132), a64s[0] * b64s[0])
     t1 = x.Eq(x.Signal(TypeU132), a64s[0] * b64s[1] + a64s[1] * b64s[0])
     t2 = x.Eq(x.Signal(TypeU132), a64s[0] * b64s[2] + a64s[1] * b64s[1] + a64s[2] * b64s[0])
@@ -212,7 +234,7 @@ def MulAddWord(x: Component) -> Component:
     carry_hi = x.Signal(Type9B)
     # range check for carries
     x.Range(carry_lo, Type9B.t)
-    x.Range(carry_hi, Type9B.t)
+    # x.Range(carry_hi, Type9B.t)
     x.Eq(d.lo, t0 + t1 * 2**64 + c.lo - carry_lo * 2**128)
     x.Eq(d.hi, carry_lo + t2 + t3 * 2**64 + c.hi - carry_hi * 2**128)
     # x.Assert(d.lo + carry_lo * 2**128 == t0 + t1 * 2**64 + c.lo)
@@ -257,8 +279,29 @@ def test_muladd():
     x.Range(c.lo, TypeU128.t)
     x.Range(c.hi, TypeU128.t)
 
-    mul_add_words = MulAddWord(x)
-    mul_add_words.type_check()
-    [d, carry] = mul_add_words.Connect([a, b, c])
+    mul_add_word = MulAddWord(x)
+    mul_add_word.type_check()
+    [d, carry] = mul_add_word.Connect([a, b, c])
 
     # dump(x)
+
+
+def test_add():
+    x = Component.main()
+
+    a = Word(x)
+    x.Range(a.lo, TypeU128.t)
+    x.Range(a.hi, TypeU128.t)
+    b = Word(x)
+    x.Range(b.lo, TypeU128.t)
+    x.Range(b.hi, TypeU128.t)
+
+    add_word = AddWord(x)
+    print()
+    # add_word.type_check()
+    [c, carry] = add_word.Connect([a, b])
+    vars = add_word.WitnessCalc([1, 2, 3, 4])
+    for signal_id, value in vars.var_map.items():
+        print(f"{x.com.signals[signal_id].fullname} = {value}")
+    for signal_id, value in vars.lvar_map.items():
+        print(f"{x.com.signals[signal_id].fullname} = {value}")

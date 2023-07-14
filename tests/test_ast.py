@@ -1,6 +1,24 @@
-from zktypes.ast import AExpr, AVar, F, Cond, If, IfElse, Assert, StrVar, Component, LExpr, Type, LVar, io_list, graph, dump, Signal, Vars
+from zktypes.ast import (
+    AExpr,
+    AVar,
+    F,
+    Cond,
+    If,
+    IfElse,
+    Assert,
+    StrVar,
+    Component,
+    LExpr,
+    Type,
+    LVar,
+    io_list,
+    graph,
+    dump,
+    Signal,
+    Vars,
+)
 from varname import varname  # type: ignore
-from typing import  Optional, Tuple, List, Any
+from typing import Optional, Tuple, List, Any
 
 x = Component.main()
 
@@ -64,8 +82,8 @@ def test_aexpr_eval():
     vars.set(va.signal(), a)
     vars.set(vb.signal(), b)
 
-    e1 = (10 + va * vb - 5) * (va ** 2)
-    assert e1.eval(vars) == F((10 + a * b - 5) * (a ** 2))
+    e1 = (10 + va * vb - 5) * (va**2)
+    assert e1.eval(vars) == F((10 + a * b - 5) * (a**2))
 
     e2 = va - vb
     assert e2.eval(vars) == F(-1)
@@ -81,19 +99,12 @@ def test_verify():
     vars.set(va.signal(), a)
     vars.set(vb.signal(), b)
 
-    assert Cond(If(va == 2,
-                   Assert(vb == 3))).verify(vars) == True
-    assert Cond(If(va == 2,
-                   Assert(vb == 4))).verify(vars) == False
-    assert Cond(If(va != 2,
-                   Assert(vb == 4))).verify(vars) == True
+    assert Cond(If(va == 2, Assert(vb == 3))).verify(vars) == True
+    assert Cond(If(va == 2, Assert(vb == 4))).verify(vars) == False
+    assert Cond(If(va != 2, Assert(vb == 4))).verify(vars) == True
 
-    assert Cond(IfElse(va != 2,
-                   Assert(vb == 4),
-                   Assert(vb == 3))).verify(vars) == True
-    assert Cond(IfElse(va != 2,
-                   Assert(vb == 4),
-                   Assert(vb != 3))).verify(vars) == False
+    assert Cond(IfElse(va != 2, Assert(vb == 4), Assert(vb == 3))).verify(vars) == True
+    assert Cond(IfElse(va != 2, Assert(vb == 4), Assert(vb != 3))).verify(vars) == False
 
     assert Assert((va == 2) & (vb == 3)).verify(vars) == True
     assert Assert((va == 5) | (vb == 3)).verify(vars) == True
@@ -179,9 +190,9 @@ def Add256(x: Component) -> Component:
 
 TypeU1 = Type.Bound(0, 1)
 TypeU8 = Type.Bound(0, 255)
-TypeU64 = Type.Bound(0, F(2**64-1))
-TypeU128 = Type.Bound(0, F(2**128-1))
-Type9B = Type.Bound(0, F(2**(9*8)-1))
+TypeU64 = Type.Bound(0, F(2**64 - 1))
+TypeU128 = Type.Bound(0, F(2**128 - 1))
+Type9B = Type.Bound(0, F(2 ** (9 * 8) - 1))
 TypeAny = Type.Any()
 
 
@@ -190,9 +201,9 @@ def test_component():
     a = x.Signal()
     b = x.Signal()
     x.Assert(x.If(a == 13, b != 5))
-    [isZero,] = IsZero(x).Connect([a])
+    [isZero] = IsZero(x).Connect([a])
     x.Assert(isZero)
-    [isZero,] = IsZero(x).Connect([b])
+    [isZero] = IsZero(x).Connect([b])
     x.Assert(isZero)
 
     x.Assert(a == 0)
@@ -250,11 +261,14 @@ def MulAddWord(x: Component) -> Component:
     a64s = WordTo64BitLimbs(x, "a_64bits").Connect([a])
     b64s = WordTo64BitLimbs(x, "b_64bits").Connect([b])
 
-    TypeU132 = Type.Bound(0, 2**132-1)
+    TypeU132 = Type.Bound(0, 2**132 - 1)
     t0 = x.Eq(x.Signal(TypeU132), a64s[0] * b64s[0])
     t1 = x.Eq(x.Signal(TypeU132), a64s[0] * b64s[1] + a64s[1] * b64s[0])
     t2 = x.Eq(x.Signal(TypeU132), a64s[0] * b64s[2] + a64s[1] * b64s[1] + a64s[2] * b64s[0])
-    t3 = x.Eq(x.Signal(TypeU132), a64s[0] * b64s[3] + a64s[1] * b64s[2] + a64s[2] * b64s[1] + a64s[3] * b64s[0])
+    t3 = x.Eq(
+        x.Signal(TypeU132),
+        a64s[0] * b64s[3] + a64s[1] * b64s[2] + a64s[2] * b64s[1] + a64s[3] * b64s[0],
+    )
 
     carry_lo = x.Signal(Type9B)
     carry_hi = x.Signal(Type9B)
@@ -269,14 +283,14 @@ def MulAddWord(x: Component) -> Component:
     # x.Assert(d.hi + carry_hi * 2**128 == carry_lo + t2 + t3 * 2**64 + c.hi)
 
     overflow = x.Eq(
-            x.Signal(),
-            carry_hi
-            + a64s[1] * b64s[3]
-            + a64s[2] * b64s[2]
-            + a64s[3] * b64s[1]
-            + a64s[2] * b64s[3]
-            + a64s[3] * b64s[2]
-            + a64s[3] * b64s[3]
+        x.Signal(),
+        carry_hi
+        + a64s[1] * b64s[3]
+        + a64s[2] * b64s[2]
+        + a64s[3] * b64s[1]
+        + a64s[2] * b64s[3]
+        + a64s[3] * b64s[2]
+        + a64s[3] * b64s[3],
     )
     x.Eq(has_overflow, overflow != 0)
 
@@ -294,7 +308,6 @@ def MulModWord(x: Component) -> Component:
 
 
 def test_muladd():
-
     x = Component.main()
 
     a = Word(x)

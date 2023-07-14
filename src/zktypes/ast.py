@@ -9,7 +9,19 @@ from enum import Enum, auto
 from varname import varname  # type: ignore
 from dataclasses import dataclass, field
 from py_ecc import bn128
-from typing import List, Union, Optional, Callable, Any, Self, TypeVar, Generic, Tuple, Dict, Iterator
+from typing import (
+    List,
+    Union,
+    Optional,
+    Callable,
+    Any,
+    Self,
+    TypeVar,
+    Generic,
+    Tuple,
+    Dict,
+    Iterator,
+)
 from typing_extensions import Protocol
 import inspect
 
@@ -44,7 +56,7 @@ def i_fmt_ascii(c: int) -> str:
         c = -c
         sign = "-"
     c_bin = bin(c)[2:]
-    c_bin_p1 = bin(c+1)[2:]
+    c_bin_p1 = bin(c + 1)[2:]
     if len(c_bin) >= 8 and c_bin.count("1") == 1:
         return f"{sign}2^{len(c_bin)-1}"
     if len(c_bin_p1) >= 8 and c_bin_p1.count("1") == 1:
@@ -67,8 +79,9 @@ class StrVar:
 
 
 @dataclass
-class AVar():
+class AVar:
     """Arithmetic Variable"""
+
     sig: Signal
     component: Component
 
@@ -100,7 +113,7 @@ class AVar():
         return to_aexpr(a).__mul__(to_aexpr(b))
 
     def __mul__(a: AVar, b: ToAExpr) -> AExpr:
-       return AExpr(a).__mul__(to_aexpr(b))
+        return AExpr(a).__mul__(to_aexpr(b))
 
     def __pow__(a: AVar, b: int) -> AExpr:
         return AExpr(a).__pow__(b)
@@ -116,8 +129,6 @@ class AVar():
 
     def __ne__(a: AVar, b: ToAExpr) -> LExpr:  # type: ignore
         return AExpr(a).__ne__(b)
-
-
 
 
 @dataclass
@@ -394,8 +405,9 @@ class LExprPair:
 
 
 @dataclass
-class LVar():
+class LVar:
     """Logical Variable"""
+
     sig: Signal
     component: Component
 
@@ -769,6 +781,7 @@ q = F(-1).n + 1
 
 class StaticBound:
     """Bound an expression between [interval[0], interval[1]]"""
+
     intervals: List[Tuple[int, int]]
 
     def __init__(self, start: int | F, end: int | F):
@@ -836,18 +849,17 @@ class StaticBound:
         for interval in new:
             # Discard intervals outside of [- 2 * q, 3 * q - 1]
             # Clip intervals that overlap [- 2 * q, 3 * q - 1]
-            if interval[1] < - 2 * q:
+            if interval[1] < -2 * q:
                 continue
             elif interval[0] >= 3 * q - 1:
                 continue
-            elif interval[0] < - 2 * q:
+            elif interval[0] < -2 * q:
                 interval = (-2 * q, interval[1])
             elif interval[1] >= 3 * q - 1:
                 interval = (interval[0], 3 * q - 1)
             new2.append(interval)
         self.intervals = new2
         return self
-
 
     def overlap(self: StaticBound, other: StaticBound) -> Tuple[StaticBound, bool]:
         # print(f"Begin overlap between {self} and {other}")
@@ -865,7 +877,7 @@ class StaticBound:
         intervals = []
         for interval_a in self.intervals:
             for interval_b in other.intervals:
-                a = cycle(interval_a, int(-ceil(interval_b[0] - interval_a[0])/q))
+                a = cycle(interval_a, int(-ceil(interval_b[0] - interval_a[0]) / q))
                 while True:
                     overlap = overlap_intervals(a, interval_b)
                     if overlap[0] <= overlap[1]:
@@ -876,7 +888,7 @@ class StaticBound:
                         break
         for interval_a in other.intervals:
             for interval_b in self.intervals:
-                a = cycle(interval_a, int(-ceil(interval_b[0] - interval_a[0])/q))
+                a = cycle(interval_a, int(-ceil(interval_b[0] - interval_a[0]) / q))
                 while True:
                     overlap = overlap_intervals(a, interval_b)
                     if overlap[0] <= overlap[1]:
@@ -904,7 +916,7 @@ class StaticBound:
 
     def __str__(self) -> str:
         s = ""
-        for (i, interval) in enumerate(self.intervals):
+        for i, interval in enumerate(self.intervals):
             if i != 0:
                 s += ", "
             start = i_fmt_ascii(interval[0])
@@ -930,6 +942,7 @@ class Type:
 
 
 StaticBoundDefault = StaticBound.default()
+
 
 @dataclass
 class Signal:
@@ -1007,6 +1020,7 @@ class VarNotFoundError(Exception):
 @dataclass
 class Vars:
     """Hold variable assignments by id, resolve them by Signal.  Implements SupportsEval"""
+
     var_map: Dict[int, F] = field(default_factory=dict)
     lvar_map: Dict[int, bool] = field(default_factory=dict)
 
@@ -1122,7 +1136,9 @@ class Component:
         self.children.append(sub_component)
         return sub_component
 
-    def Signal(self, type: Optional[Type] = None, name: Optional[str] = None, io: Optional[IO] = None) -> AVar:
+    def Signal(
+        self, type: Optional[Type] = None, name: Optional[str] = None, io: Optional[IO] = None
+    ) -> AVar:
         assert self.state == ComponentState.STARTED
         if name is None:
             name = varname(strict=False)
@@ -1144,7 +1160,7 @@ class Component:
         self.signals.append(signal)
         return LVar(signal, self)
 
-    InputOutputType = TypeVar('InputOutputType', bound=InputOutput)
+    InputOutputType = TypeVar("InputOutputType", bound=InputOutput)
 
     def In(self, signals: InputOutputType) -> InputOutputType:
         self.inputs.append(signals)
@@ -1160,7 +1176,7 @@ class Component:
         self.com.asserts.append(a)
         self.assert_ids.append(id)
 
-    SignalType = TypeVar('SignalType', AVar, LVar)
+    SignalType = TypeVar("SignalType", AVar, LVar)
 
     def Eq(self, signal: SignalType, e: AExpr | LExpr) -> SignalType:
         assert self.state == ComponentState.STARTED
@@ -1208,7 +1224,7 @@ class Component:
         assert self.state == ComponentState.FINALIZED
         self.state = ComponentState.CONNECTED
         assert len(inputs) == len(self.inputs)
-        for (i, parent_input) in enumerate(inputs):
+        for i, parent_input in enumerate(inputs):
             assert isinstance(parent_input, type(self.inputs[i]))
         self.parent_inputs = inputs
         assert self.parent is not None
@@ -1240,10 +1256,10 @@ class Component:
                         try:
                             rhs_eval = rhs.eval(self.com.vars)
                         except VarNotFoundError as e:
-                            print(f"VarNotFound {e.signal.fullname} in \"{rhs}\"")
+                            print(f'VarNotFound {e.signal.fullname} in "{rhs}"')
                             if a.frame is not None:
                                 if a.frame.code_context is not None:
-                                    code = '\n'.join(a.frame.code_context)
+                                    code = "\n".join(a.frame.code_context)
                                     print(f"> {a.frame.filename}:{a.frame.lineno}\n{code}")
                             raise e
                         self.com.vars.set(signal, rhs_eval)
@@ -1251,13 +1267,17 @@ class Component:
                         raise ValueError
                 case AssignmentComponent(component):
                     # print(f"DBG AssignComponent {component.fullname}")
-                    for (signal_parent, signal_child) in zip(component.parent_inputs_signal_iter(), component.input_signals_iter()):
+                    for signal_parent, signal_child in zip(
+                        component.parent_inputs_signal_iter(), component.input_signals_iter()
+                    ):
                         try:
                             signal_value = self.com.vars.eval(signal_parent)
                             # print(f"DBG {signal_child.fullname} = {signal_value}")
                             self.com.vars.set(signal_child, signal_value)
                         except VarNotFoundError as e:
-                            print(f"VarNotFound {e.signal.fullname} in connect to {component.fullname}")
+                            print(
+                                f"VarNotFound {e.signal.fullname} in connect to {component.fullname}"
+                            )
                             # TODO: Save frame in Connect and print it here
                             raise e
                     component._witness_calc()
@@ -1273,10 +1293,9 @@ class Component:
                         # TODO: Save frame in Assign and print it here
                         raise e
 
-
     def WitnessCalc(self, inputs: List[bool | int | F]) -> Vars:
         self.com.vars = Vars()
-        for (i, signal) in enumerate(self.input_signals_iter()):
+        for i, signal in enumerate(self.input_signals_iter()):
             self.com.vars.set(signal, inputs[i])
         self._witness_calc()
 
@@ -1287,17 +1306,23 @@ class Component:
         for child in self.children:
             child.walk(fn)
 
-    def Verify(self, depth = 0):
+    def Verify(self, depth=0):
         assert self.state == ComponentState.WITNESS_ASSIGNED
         if depth > 0:
-            for (parent_signal, signal) in zip(self.parent_inputs_signal_iter(), self.input_signals_iter()):
+            for parent_signal, signal in zip(
+                self.parent_inputs_signal_iter(), self.input_signals_iter()
+            ):
                 try:
                     parent_value = self.com.vars.eval(parent_signal)
                     value = self.com.vars.eval(signal)
                     if parent_value != value:
-                        print(f"AssertNotSatisfied {signal.fullname}:{value} != {parent_signal.fullname}:{parent_value}")
+                        print(
+                            f"AssertNotSatisfied {signal.fullname}:{value} != {parent_signal.fullname}:{parent_value}"
+                        )
                 except VarNotFoundError as e:
-                    print(f"VarNotFound {e.signal.fullname} in Input/Output for component {self.fullname}")
+                    print(
+                        f"VarNotFound {e.signal.fullname} in Input/Output for component {self.fullname}"
+                    )
                     # TODO print frame
                     raise e
         for a in self.asserts_iter():
@@ -1306,7 +1331,7 @@ class Component:
                     print(f"AssertNotSatisfied {a.s}")
                     if a.frame is not None:
                         if a.frame.code_context is not None:
-                            code = '\n'.join(a.frame.code_context)
+                            code = "\n".join(a.frame.code_context)
                             print(f"> {a.frame.filename}:{a.frame.lineno}\n{code}")
                     for signal in a.signals():
                         print(f" - {signal.fullname} = {self.com.vars.eval(signal)}")
@@ -1314,12 +1339,11 @@ class Component:
                 print(f"VarNotFound {e.signal.fullname} in")
                 if a.frame is not None:
                     if a.frame.code_context is not None:
-                        code = '\n'.join(a.frame.code_context)
+                        code = "\n".join(a.frame.code_context)
                         print(f"> {a.frame.filename}:{a.frame.lineno}\n{code}")
                 raise e
         for sub in self.children:
-            sub.Verify(depth=depth+1)
-
+            sub.Verify(depth=depth + 1)
 
     def type_check(self):
         print("Type check")
@@ -1360,7 +1384,7 @@ class Component:
                     case _:
                         continue
                 rhs_bound = rhs.type_eval()
-                opt_signal  = lhs.as_var()
+                opt_signal = lhs.as_var()
                 if opt_signal is not None:
                     signal = opt_signal
                     signal.inferred, update = signal.inferred.overlap(rhs_bound)
@@ -1396,7 +1420,9 @@ class Component:
             if type is None:
                 continue
             if not signal.inferred.type_check(type.t):
-                print(f" - Signal {signal.fullname} type '{type.name}':{type.t} not satisfied by {signal.inferred}")
+                print(
+                    f" - Signal {signal.fullname} type '{type.name}':{type.t} not satisfied by {signal.inferred}"
+                )
 
 
 def dump(x: Component):
@@ -1432,13 +1458,13 @@ def graph(x: Component):
         return signal.fullname.replace(".", "_")
 
     def _graph(x: Component, lvl: int):
-        for (parent_signal, signal) in zip(x.parent_inputs_signal_iter(), x.input_signals_iter()):
+        for parent_signal, signal in zip(x.parent_inputs_signal_iter(), x.input_signals_iter()):
             parent_fullname = name(parent_signal)
             fullname = name(signal)
             _print(lvl, f"{parent_fullname} -> {fullname};")
         fullname = x.fullname.replace(".", "_")
         _print(lvl, f"subgraph cluster_{fullname} {{")
-        _print(lvl+1, f"label=\"{x.name}\";")
+        _print(lvl + 1, f'label="{x.name}";')
 
         inputs = list(x.input_signals_iter())
         outputs = list(x.output_signals_iter())
@@ -1450,23 +1476,23 @@ def graph(x: Component):
             elif signal.id in outputs:
                 prop = ",color=orange"
             fullname = name(signal)
-            _print(lvl+1, f"{fullname}[label=\"{signal.name}\"{prop}];")
+            _print(lvl + 1, f'{fullname}[label="{signal.name}"{prop}];')
         for a in x.asserts_iter():
             assert_name = f"assert_{fullname}{assert_id}"
             a_str = f"{a}"
             a_str = a_str.replace(f"{x.fullname}.", "")
-            _print(lvl+1, f"{assert_name}[shape=rectangle,label=\"{a_str}\"];")
+            _print(lvl + 1, f'{assert_name}[shape=rectangle,label="{a_str}"];')
             assert_id += 1
             for signal in a.signals():
                 signal_name = name(signal)
-                _print(lvl+1, f"{signal_name} -> {assert_name};")
+                _print(lvl + 1, f"{signal_name} -> {assert_name};")
 
         for child in x.children:
-            _graph(child, lvl+1)
+            _graph(child, lvl + 1)
         _print(lvl, "}")
 
     print("")
     print("digraph G {")
-    print("  rankdir = \"LR\";")
+    print('  rankdir = "LR";')
     _graph(x, 1)
     print("}")

@@ -80,7 +80,7 @@ class AVar():
         return F(0)
 
     def signal(self) -> Signal:
-        return self.inner.deref()
+        return self.inner
 
     def fmt_ascii(self) -> str:
         return self.inner.fmt_ascii()
@@ -289,7 +289,7 @@ class AExpr:
             case Const(c):
                 return StaticBound(c, c)
             case AVar(v, _):
-                return v.signals[v.id].inferred
+                return v.inferred
             case Sum(es):
                 bound = es[0].type_eval()
                 for e in es[1:]:
@@ -312,7 +312,7 @@ class AExpr:
             case Const(c):
                 return c
             case AVar(v, _):
-                return vars.var_eval(v.deref())
+                return vars.var_eval(v)
             case Sum(es):
                 return sum([e.eval(vars) for e in es], start=F(0))
             case Mul(es):
@@ -412,7 +412,7 @@ class LVar(Generic[V]):
         return False
 
     def signal(self) -> Signal:
-        return self.inner.deref()
+        return self.inner
 
     def __eq__(a: LVar, b: ToLExpr) -> LExpr:  # type: ignore
         """called with `==`"""
@@ -955,19 +955,7 @@ class Signal:
         return self.name
 
 
-@dataclass
-class SignalRef:
-    id: int
-    signals: List[Signal]
-
-    def fmt_ascii(self) -> str:
-        return self.signals[self.id].fullname
-
-    def deref(self) -> Signal:
-        return self.signals[self.id]
-
-
-Var = SignalRef
+Var = Signal
 
 
 InputOutput = AVar | LVar | List[AVar | LVar] | SupportsVars
@@ -1027,7 +1015,7 @@ class VarNotFoundError(Exception):
 
 @dataclass
 class Vars:
-    """Hold variable assignments by id, resolve them by SignalRef.  Implements SupportsEval"""
+    """Hold variable assignments by id, resolve them by Signal.  Implements SupportsEval"""
     var_map: Dict[int, F] = field(default_factory=dict)
     lvar_map: Dict[int, bool] = field(default_factory=dict)
 
@@ -1082,7 +1070,7 @@ class Component:
     name: str
     fullname: str
     com: Common = field(default_factory=Common)
-    signal_ids: List[int] = field(default_factory=list)
+    signals: List[Signal] = field(default_factory=list)
     signal_names: Dict[str, int] = field(default_factory=dict)
     assert_ids: List[int] = field(default_factory=list)
     parent: Optional[Component] = None
@@ -1102,10 +1090,6 @@ class Component:
         for input in ss:
             for signal in io_list(input):
                 yield signal
-
-    def signals_iter(self) -> Iterator[Signal]:
-        for id in self.signal_ids:
-            yield self.com.signals[id]
 
     def input_signals_iter(self) -> Iterator[Signal]:
         return self._io_iter(self.inputs)
@@ -1151,8 +1135,8 @@ class Component:
         id = len(self.com.signals)
         signal = Signal(name, f"{self.fullname}.{name}", id, inspect.stack()[1], type=type)
         self.com.signals.append(signal)
-        self.signal_ids.append(id)
-        return AVar(SignalRef(id, self.com.signals), self)
+        self.signals.append(signal)
+        return AVar(signal, self)
 
     def LSignal(self, name: Optional[str] = None) -> LVar:
         assert self.state == ComponentState.STARTED
@@ -1162,8 +1146,8 @@ class Component:
         id = len(self.com.signals)
         signal = Signal(name, f"{self.fullname}.{name}", id, inspect.stack()[1], logical=True)
         self.com.signals.append(signal)
-        self.signal_ids.append(id)
-        return LVar(SignalRef(id, self.com.signals), self)
+        self.signals.append(signal)
+        return LVar(signal, self)
 
     def In(self, signals: InputOutput) -> Any:
         self.inputs.append(signals)
@@ -1249,9 +1233,8 @@ class Component:
                             (lhs, rhs) = (_lhs, _rhs)
                         case _:
                             raise ValueError
-                    signal_ref = lhs.as_var()
-                    if signal_ref is not None:
-                        signal = signal_ref.deref()
+                    signal = lhs.as_var()
+                    if signal is not None:
                         try:
                             rhs_eval = rhs.eval(self.com.vars)
                         except VarNotFoundError as e:
@@ -1273,7 +1256,7 @@ class Component:
                             # TODO: Save frame in Connect and print it here
                             raise e
                         self.com.vars.set(signal_child, signal_value)
-                    component._witness_calc(self.com.vars)
+                    component._witness_calc()
                 case AssignmentManual(signal_id, fn):
                     try:
                         signal_value = fn()
@@ -1309,8 +1292,7 @@ class Component:
                         if a.frame.code_context is not None:
                             code = '\n'.join(a.frame.code_context)
                             print(f"> {a.frame.filename}:{a.frame.lineno}\n{code}")
-                    for var in a.vars():
-                        signal = var.deref()
+                    for signal in a.vars():
                         print(f" - {signal.fullname} = {self.com.vars.eval(signal)}")
             except VarNotFoundError as e:
                 print(f"VarNotFound {self.com.signals[e.v].fullname} in")
@@ -1363,9 +1345,8 @@ class Component:
                     case _:
                         continue
                 rhs_bound = rhs.type_eval()
-                if lhs.is_var():
-                    signal_ref = lhs.as_var()
-                    signal = self.com.signals[signal_ref.id]
+                signal = lhs.as_var()
+                if signal is not None:
                     signal.inferred, update = signal.inferred.overlap(rhs_bound)
                     if signal.fullname == "main.mulAddWord.d_hi":
                         print(f" - DBG {rhs_bound} -> {signal.inferred}")
@@ -1390,13 +1371,13 @@ class Component:
         #     overlap, _ = rhs_bound.overlap(lhs_bound)
         #     if overlap.overflow():
         #         print(f" - Overflow {rhs_str} == {lhs_str}")
-        for signal in self.signals_iter():
+        for signal in self.signals:
             # print(f" - Signal {signal.fullname} {signal.inferred}")
             if signal.inferred.overflow():
                 print(f" - Overflow of {signal.fullname}")
 
         print("# Type checks")
-        for signal in self.signals_iter():
+        for signal in self.signals:
             type = signal.type
             if type is None:
                 continue
@@ -1407,7 +1388,7 @@ class Component:
 def dump(x: Component):
     def _dump(x: Component):
         print(f"# {x.fullname}\n")
-        for signal in x.signals_iter():
+        for signal in x.signals:
             type = ""
             io = ""
             inputs = list(x.input_signals_iter())
@@ -1448,7 +1429,7 @@ def graph(x: Component):
         inputs = list(x.input_signals_iter())
         outputs = list(x.output_signals_iter())
         assert_id = 0
-        for signal in x.signals_iter():
+        for signal in x.signals:
             prop = ""
             if signal.id in inputs:
                 prop = ",color=green"

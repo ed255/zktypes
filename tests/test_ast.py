@@ -1,4 +1,4 @@
-from zktypes.ast import AExpr, AVar, F, Cond, If, IfElse, Assert, StrVar, Component, LExpr, Type, LVar, io_list, graph, dump, SignalRef
+from zktypes.ast import AExpr, AVar, F, Cond, If, IfElse, Assert, StrVar, Component, LExpr, Type, LVar, io_list, graph, dump
 from varname import varname  # type: ignore
 from typing import  Optional, Tuple, List, Any
 

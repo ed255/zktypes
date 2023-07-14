@@ -1,4 +1,4 @@
-from zktypes.ast import AExpr, AVar, F, Cond, If, IfElse, Assert, StrVar, Component, LExpr, Type, LVar, io_list, graph, dump
+from zktypes.ast import AExpr, AVar, F, Cond, If, IfElse, Assert, StrVar, Component, LExpr, Type, LVar, io_list, graph, dump, SignalRef
 from varname import varname  # type: ignore
 from typing import  Optional, Tuple, List, Any
 
@@ -98,8 +98,8 @@ class Word:
     hi: AVar
     name: str
 
-    def vars(self) -> List[Any]:
-        return [self.lo.v, self.hi.v]
+    def vars(self) -> List[AVar]:
+        return [self.lo, self.hi]
 
     def __init__(self, x: Component, name: Optional[str] = None):
         if name is None:
@@ -196,8 +196,8 @@ def AddWord(x: Component) -> Component:
     carry_lo = x.Signal(TypeCarry)
     carry_hi = x.Out(x.Signal(TypeCarry))
 
-    x.Assign(carry_lo, lambda v: (v(a.lo).n + v(b.lo).n) // 2**128)
-    x.Assign(carry_hi, lambda v: (v(a.hi).n + v(b.hi).n) // 2**128)
+    x.Assign(carry_lo, lambda: (a.lo.v().n + b.lo.v().n) // 2**128)
+    x.Assign(carry_hi, lambda: (a.hi.v().n + b.hi.v().n) // 2**128)
 
     x.Eq(c.lo, a.lo + b.lo - carry_lo * 2**128)
     x.Eq(c.hi, carry_lo + a.hi + b.hi - carry_hi * 2**128)

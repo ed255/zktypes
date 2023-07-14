@@ -70,12 +70,20 @@ class StrVar:
 
 
 @dataclass
-class AVar(Generic[V]):
+class AVar():
     """Arithmetic Variable"""
-    v: V
+    inner: Var
+    component: Component
+
+    def v(self) -> F:
+        # TODO
+        return F(0)
+
+    def signal(self) -> Signal:
+        return self.inner.deref()
 
     def fmt_ascii(self) -> str:
-        return self.v.fmt_ascii()
+        return self.inner.fmt_ascii()
 
     def __neg__(self: AVar) -> AExpr:
         return AExpr(self).__neg__()
@@ -152,7 +160,7 @@ class AExpr:
         match self.e:
             case Const(_):
                 return 0
-            case AVar(_):
+            case AVar(_, _):
                 return 1
             case Neg(_):
                 return 2
@@ -165,14 +173,14 @@ class AExpr:
 
     def is_var(self) -> bool:
         match self.e:
-            case AVar(_):
+            case AVar(_, _):
                 return True
             case _:
                 return False
 
     def as_var(self) -> Optional[Any]:
         match self.e:
-            case AVar(v):
+            case AVar(v, _):
                 return v
             case _:
                 return None
@@ -185,7 +193,7 @@ class AExpr:
                 return e.vars()
             case Const(_):
                 return []
-            case AVar(v):
+            case AVar(v, _):
                 return [v]
             case Sum(es):
                 return list(chain(*[e.vars() for e in es]))
@@ -280,7 +288,7 @@ class AExpr:
                 return bound
             case Const(c):
                 return StaticBound(c, c)
-            case AVar(v):
+            case AVar(v, _):
                 return v.signals[v.id].inferred
             case Sum(es):
                 bound = es[0].type_eval()
@@ -303,7 +311,7 @@ class AExpr:
                 return e.eval(vars) ** p
             case Const(c):
                 return c
-            case AVar(v):
+            case AVar(v, _):
                 return vars.var_eval(v)
             case Sum(es):
                 return sum([e.eval(vars) for e in es], start=F(0))
@@ -312,14 +320,14 @@ class AExpr:
 
     def is_terminal(self: AExpr) -> bool:
         match self.e:
-            case Const(_) | AVar(_) | Pow(_, _):
+            case Const(_) | AVar(_, _) | Pow(_, _):
                 return True
             case _:
                 return False
 
     def is_mul_terminal(self: AExpr) -> bool:
         match self.e:
-            case Const(_) | AVar(_) | Mul(_) | Pow(_, _):
+            case Const(_) | AVar(_, _) | Mul(_) | Pow(_, _):
                 return True
             case _:
                 return False
@@ -342,7 +350,7 @@ class AExpr:
                 return fmt_exp(e) + f"^{p}"
             case Const(c):
                 return f_fmt_ascii(c)
-            case AVar(_) as e:
+            case AVar(_, _) as e:
                 return e.fmt_ascii()
             case Sum(es):
                 result = ""
@@ -393,10 +401,18 @@ class LExprPair:
 @dataclass
 class LVar(Generic[V]):
     """Logical Variable"""
-    v: V
+    inner: Var
+    component: Component
 
     def fmt_ascii(self) -> str:
-        return self.v.fmt_ascii()
+        return self.inner.fmt_ascii()
+
+    def v(self) -> bool:
+        # TODO
+        return False
+
+    def signal(self) -> Signal:
+        return self.inner.deref()
 
     def __eq__(a: LVar, b: ToLExpr) -> LExpr:  # type: ignore
         """called with `==`"""
@@ -464,21 +480,21 @@ class LExpr:
 
     def is_var(self) -> bool:
         match self.e:
-            case LVar(_):
+            case LVar(_, _):
                 return True
             case _:
                 return False
 
     def as_var(self) -> Optional[Any]:
         match self.e:
-            case LVar(v):
+            case LVar(v, _):
                 return v
             case _:
                 return None
 
     def vars(self) -> List[Any]:
         match self.e:
-            case LVar(v):
+            case LVar(v, _):
                 return [v]
             case And(es):
                 return list(chain(*[e.vars() for e in es]))
@@ -541,7 +557,7 @@ class LExpr:
 
     def eval(self, vars: SupportsEval) -> bool:
         match self.e:
-            case LVar(v):
+            case LVar(v, _):
                 return vars.lvar_eval(v)
             case And(es):
                 return reduce(lambda x, y: x and y, [e.eval(vars) for e in es], True)
@@ -564,7 +580,7 @@ class LExpr:
 
     def is_terminal(self: LExpr) -> bool:
         match self.e:
-            case LVar(_) | Not(_):
+            case LVar(_, _) | Not(_):
                 return True
             case _:
                 return False
@@ -581,7 +597,7 @@ class LExpr:
             return result
 
         match self.e:
-            case LVar(_) as e:
+            case LVar(_, _) as e:
                 return e.fmt_ascii()
             case And(es):
                 return " and ".join([fmt_exp(e) for e in es])
@@ -947,22 +963,28 @@ class SignalRef:
     def fmt_ascii(self) -> str:
         return self.signals[self.id].fullname
 
+    def deref(self) -> Signal:
+        return self.signals[self.id]
+
+
+Var = SignalRef
+
 
 InputOutput = AVar | LVar | List[AVar | LVar] | SupportsVars
 
 
-def io_list(io: InputOutput) -> List[Any]:
-    result: List[AVar | LVar] = []
+def io_list(io: InputOutput) -> List[Signal]:
+    signals: List[Signal] = []
     match io:
-        case AVar(v):
-            result = [v]
-        case LVar(v):
-            result = [v]
+        case AVar(_, _) as v:
+            signals = [v.signal()]
+        case LVar(_, _) as v:
+            signals = [v.signal()]
         case [*_] as vs:
-            result = [v.v for v in vs]
+            signals = [v.signal() for v in vs]
         case _:
-            result = io.vars()  # type: ignore
-    return result
+            signals = [v.signal() for v in io.vars()]  # type: ignore
+    return signals
 
 
 class IO(Enum):
@@ -975,13 +997,6 @@ class ComponentState(Enum):
     FINALIZED = auto()
     CONNECTED = auto()
 
-
-@dataclass
-class Common:
-    # All signals
-    signals: List[Signal] = field(default_factory=list)
-    # All asserts
-    asserts: List[Assert] = field(default_factory=list)
 
 
 @dataclass
@@ -1026,19 +1041,17 @@ class Vars:
             assert isinstance(value, F)
             self.var_map[signal.id] = value
 
-    def var_eval(self, signal_ref: Any) -> F:
-        assert isinstance(signal_ref, SignalRef)
+    def var_eval(self, signal: Signal) -> F:
         try:
-            return self.var_map[signal_ref.id]
+            return self.var_map[signal.id]
         except KeyError:
-            raise VarNotFoundError(signal_ref.id)
+            raise VarNotFoundError(signal.id)
 
-    def lvar_eval(self, signal_ref: Any) -> bool:
-        assert isinstance(signal_ref, SignalRef)
+    def lvar_eval(self, signal: Signal) -> bool:
         try:
-            return self.lvar_map[signal_ref.id]
+            return self.lvar_map[signal.id]
         except KeyError:
-            raise VarNotFoundError(signal_ref.id)
+            raise VarNotFoundError(signal.id)
 
     def eval(self, signal: Signal) -> bool | F:
         try:
@@ -1048,6 +1061,16 @@ class Vars:
                 return self.var_map[signal.id]
         except KeyError:
             raise VarNotFoundError(signal.id)
+
+
+@dataclass
+class Common:
+    # All signals
+    signals: List[Signal] = field(default_factory=list)
+    # All asserts
+    asserts: List[Assert] = field(default_factory=list)
+    # Witness assignments
+    vars: Vars = field(default_factory=Vars)
 
 
 @dataclass
@@ -1075,8 +1098,8 @@ class Component:
 
     def _io_iter(self, ss: List[InputOutput]) -> Iterator[Signal]:
         for input in ss:
-            for signal_ref in io_list(input):
-                yield self.com.signals[signal_ref.id]
+            for signal in io_list(input):
+                yield signal
 
     def signals_iter(self) -> Iterator[Signal]:
         for id in self.signal_ids:
@@ -1127,7 +1150,7 @@ class Component:
         signal = Signal(name, f"{self.fullname}.{name}", id, inspect.stack()[1], type=type)
         self.com.signals.append(signal)
         self.signal_ids.append(id)
-        return AVar(SignalRef(id, self.com.signals))
+        return AVar(SignalRef(id, self.com.signals), self)
 
     def LSignal(self, name: Optional[str] = None) -> LVar:
         assert self.state == ComponentState.STARTED
@@ -1138,7 +1161,7 @@ class Component:
         signal = Signal(name, f"{self.fullname}.{name}", id, inspect.stack()[1], logical=True)
         self.com.signals.append(signal)
         self.signal_ids.append(id)
-        return LVar(SignalRef(id, self.com.signals))
+        return LVar(SignalRef(id, self.com.signals), self)
 
     def In(self, signals: InputOutput) -> Any:
         self.inputs.append(signals)
@@ -1204,16 +1227,17 @@ class Component:
         self.parent.assignments.append(Assignment(AssignmentComponent(self)))
         return self.outputs
 
-    def Assign(self, signal: AVar, fn: Callable[Callable[[AExpr], F], F | int]):
-        self.assignments.append(Assignment(AssignmentManual(signal.v.id, fn)))
+    def Assign(self, var: AVar, fn: Callable[[], F | int]):
+        self.assignments.append(Assignment(AssignmentManual(var.signal().id, fn)))
 
-    def _witness_calc(self, vars: Vars):
+    def _witness_calc(self):
         # print(f"DBG {self.assignments}")
         for assignment in self.assignments:
             match assignment.a:
                 case AssignmentEq(assert_id):
                     a = self.com.asserts[assert_id]
-                    (lhs, rhs) = (None, None)
+                    lhs: Any = None
+                    rhs: Any = None
                     match a.s:
                         case LExpr(Eq(AExprPair(_lhs, _rhs))):
                             (lhs, rhs) = (_lhs, _rhs)
@@ -1221,49 +1245,50 @@ class Component:
                             (lhs, rhs) = (_lhs, _rhs)
                         case _:
                             raise ValueError
-                    if lhs.is_var():
-                        signal_ref = lhs.as_var()
-                        signal = self.com.signals[signal_ref.id]
+                    signal_ref = lhs.as_var()
+                    if signal_ref is not None:
+                        signal = signal_ref.deref()
                         try:
-                            rhs_eval = rhs.eval(vars)
+                            rhs_eval = rhs.eval(self.com.vars)
                         except VarNotFoundError as e:
                             print(f"VarNotFound {self.com.signals[e.v].fullname} in \"{rhs}\"")
                             if a.frame is not None:
-                                code = '\n'.join(a.frame.code_context)
-                                print(f"> {a.frame.filename}:{a.frame.lineno}\n{code}")
+                                if a.frame.code_context is not None:
+                                    code = '\n'.join(a.frame.code_context)
+                                    print(f"> {a.frame.filename}:{a.frame.lineno}\n{code}")
                             raise e
-                        vars.set(signal, rhs_eval)
+                        self.com.vars.set(signal, rhs_eval)
                     else:
                         raise ValueError
                 case AssignmentComponent(component):
                     for (signal_parent, signal_child) in zip(component.parent_inputs_signal_iter(), component.input_signals_iter()):
                         try:
-                            signal_value = vars.eval(signal_child)
+                            signal_value = self.com.vars.eval(signal_child)
                         except VarNotFoundError as e:
                             print(f"VarNotFound {self.com.signals[e.v].fullname} in connect to {component.fullname}")
                             # TODO: Save frame in Connect and print it here
                             raise e
-                        vars.set(signal_child, signal_value)
-                    component._witness_calc(vars)
+                        self.com.vars.set(signal_child, signal_value)
+                    component._witness_calc(self.com.vars)
                 case AssignmentManual(signal_id, fn):
                     try:
-                        signal_value = fn(lambda avar: vars.var_eval(avar.v))
+                        signal_value = fn()
                         if isinstance(signal_value, int):
                             signal_value = F(signal_value)
                     except VarNotFoundError as e:
                         print(f"VarNotFound {self.com.signals[e.v].fullname} in Assign")
                         # TODO: Save frame in Assign and print it here
                         raise e
-                    vars.set(self.com.signals[signal_id], signal_value)
+                    self.com.vars.set(self.com.signals[signal_id], signal_value)
 
 
     def WitnessCalc(self, inputs: List[bool | int | F]) -> Vars:
-        vars = Vars()
+        self.com.vars = Vars()
         for (i, signal) in enumerate(self.input_signals_iter()):
-            vars.set(signal, inputs[i])
-        self._witness_calc(vars)
+            self.com.vars.set(signal, inputs[i])
+        self._witness_calc()
 
-        return vars
+        return self.com.vars
 
     def walk(self, fn: Callable[[Component], None]):
         fn(self)
@@ -1301,7 +1326,7 @@ class Component:
         for a in self.com.asserts:
             match a.s:
                 case RangeCheck(var, bound):
-                    signal = self.com.signals[var.v.id]
+                    signal = var.signal()
                     signal.inferred, _ = signal.inferred.overlap(bound)
                     print(f"- Range {signal.fullname} is {signal.inferred}")
                 case _:

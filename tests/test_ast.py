@@ -1,17 +1,22 @@
-from zktypes.ast import AExpr, AVar, F, Cond, If, IfElse, Assert, StrVar, Component, LExpr, Type, LVar, io_list, graph, dump
+from zktypes.ast import AExpr, AVar, F, Cond, If, IfElse, Assert, StrVar, Component, LExpr, Type, LVar, io_list, graph, dump, Signal, Vars
 from varname import varname  # type: ignore
 from typing import  Optional, Tuple, List, Any
 
-
-def var(s: str) -> AExpr:
-    return AExpr(AVar(StrVar(s)))
+x = Component.main()
 
 
-def lvar(s: str) -> LExpr:
-    return LExpr(LVar(StrVar(s)))
+def var(s: str) -> AVar:
+    return x.Signal(name=s)
+
+
+def lvar(s: str) -> LVar:
+    return x.LSignal(name=s)
 
 
 def test_aexpr_build():
+    global x
+    x = Component.main()
+
     print(10 + var("a"))
     print(var("a") + 10)
     print(var("a") + 2 + 10)
@@ -24,6 +29,15 @@ def test_aexpr_build():
 
 
 def test_lexpr_build():
+    global x
+    x = Component.main()
+
+    def var(s: str) -> AVar:
+        return x.Signal(name=s)
+
+    def lvar(s: str) -> LVar:
+        return x.LSignal(name=s)
+
     e1 = var("a") == var("b")
     e2 = var("a") != var("b")
     print(e1)
@@ -41,43 +55,49 @@ def test_lexpr_build():
 
 
 def test_aexpr_eval():
-    va = 2
-    vb = 3
-    vs = {"a": F(va), "b": F(vb)}
+    global x
+    x = Component.main()
 
-    def var_eval(v: StrVar) -> F:
-        return vs[v.s]
+    vars = Vars()
+    (va, a) = (var("a"), 2)
+    (vb, b) = (var("b"), 3)
+    vars.set(va.signal(), a)
+    vars.set(vb.signal(), b)
 
-    e1 = (10 + var("a") * var("b") - 5) * (var("a") ** 2)
-    assert e1.eval(var_eval) == F((10 + va * vb - 5) * (va ** 2))
+    e1 = (10 + va * vb - 5) * (va ** 2)
+    assert e1.eval(vars) == F((10 + a * b - 5) * (a ** 2))
 
-    e2 = var("a") - var("b")
-    assert e2.eval(var_eval) == F(-1)
+    e2 = va - vb
+    assert e2.eval(vars) == F(-1)
 
 
 def test_verify():
-    vs = {"a": F(2), "b": F(3)}
+    global x
+    x = Component.main()
 
-    def var_eval(v: StrVar) -> F:
-        return vs[v.s]
+    vars = Vars()
+    (va, a) = (var("a"), 2)
+    (vb, b) = (var("b"), 3)
+    vars.set(va.signal(), a)
+    vars.set(vb.signal(), b)
 
-    assert Cond(If(var("a") == 2,
-                   Assert(var("b") == 3))).verify(var_eval) == True
-    assert Cond(If(var("a") == 2,
-                   Assert(var("b") == 4))).verify(var_eval) == False
-    assert Cond(If(var("a") != 2,
-                   Assert(var("b") == 4))).verify(var_eval) == True
+    assert Cond(If(va == 2,
+                   Assert(vb == 3))).verify(vars) == True
+    assert Cond(If(va == 2,
+                   Assert(vb == 4))).verify(vars) == False
+    assert Cond(If(va != 2,
+                   Assert(vb == 4))).verify(vars) == True
 
-    assert Cond(IfElse(var("a") != 2,
-                   Assert(var("b") == 4),
-                   Assert(var("b") == 3))).verify(var_eval) == True
-    assert Cond(IfElse(var("a") != 2,
-                   Assert(var("b") == 4),
-                   Assert(var("b") != 3))).verify(var_eval) == False
+    assert Cond(IfElse(va != 2,
+                   Assert(vb == 4),
+                   Assert(vb == 3))).verify(vars) == True
+    assert Cond(IfElse(va != 2,
+                   Assert(vb == 4),
+                   Assert(vb != 3))).verify(vars) == False
 
-    assert Assert((var("a") == 2) & (var("b") == 3)).verify(var_eval) == True
-    assert Assert((var("a") == 5) | (var("b") == 3)).verify(var_eval) == True
-    assert Assert(~(var("a") == 5)).verify(var_eval) == True
+    assert Assert((va == 2) & (vb == 3)).verify(vars) == True
+    assert Assert((va == 5) | (vb == 3)).verify(vars) == True
+    assert Assert(~(va == 5)).verify(vars) == True
 
 
 def IsZero(x: Component) -> Component:
@@ -98,7 +118,7 @@ class Word:
     hi: AVar
     name: str
 
-    def vars(self) -> List[AVar]:
+    def vars(self) -> List[AVar | LVar]:
         return [self.lo, self.hi]
 
     def __init__(self, x: Component, name: Optional[str] = None):
@@ -114,7 +134,7 @@ class Word:
         l2 = x.Signal(TypeU64, name=f"{self.name}_2")
         l3 = x.Signal(TypeU64, name=f"{self.name}_3")
         for limb in [l0, l1, l2, l3]:
-            x.Range(limb, TypeU64.t)
+            x.Range(limb, TypeU64)
         x.Eq(self.lo, l0 + l1 * 2**64)
         x.Eq(self.hi, l2 + l3 * 2**64)
         return [l0, l1, l2, l3]
@@ -129,10 +149,15 @@ def WordTo64BitLimbs(x: Component, name: str) -> Component:
     l1 = x.Out(x.Signal(TypeU64))
     l2 = x.Out(x.Signal(TypeU64))
     l3 = x.Out(x.Signal(TypeU64))
+    # x.Assign(l0, lambda: w.lo.v().n % 2**64)
+    x.Assign(l0, lambda: w.lo.v().n % 2**64)
+    x.Assign(l1, lambda: w.lo.v().n // 2**64)
+    x.Assign(l2, lambda: w.hi.v().n % 2**64)
+    x.Assign(l3, lambda: w.hi.v().n // 2**64)
     for limb in [l0, l1, l2, l3]:
-        x.Range(limb, TypeU64.t)
-    x.Eq(w.lo, l0 + l1 * 2**64)
-    x.Eq(w.hi, l2 + l3 * 2**64)
+        x.Range(limb, TypeU64)
+    x.Assert(w.lo == l0 + l1 * 2**64)
+    x.Assert(w.hi == l2 + l3 * 2**64)
 
     return x.Finalize()
 
@@ -174,11 +199,11 @@ def test_component():
     x.Assert(x.If(a == 0, b == 42))
 
     word_a = Word(x)
-    x.Range(word_a.lo, TypeU128.t)
-    x.Range(word_a.hi, TypeU128.t)
+    x.Range(word_a.lo, TypeU128)
+    x.Range(word_a.hi, TypeU128)
     word_b = Word(x)
-    x.Range(word_b.lo, TypeU128.t)
-    x.Range(word_b.hi, TypeU128.t)
+    x.Range(word_b.lo, TypeU128)
+    x.Range(word_b.hi, TypeU128)
     [res, _] = Add256(x).Connect([word_a, word_b])
     x.Assert((res.lo == 1) & (res.hi == 1))
 
@@ -197,13 +222,13 @@ def AddWord(x: Component) -> Component:
     carry_hi = x.Out(x.Signal(TypeCarry))
 
     x.Assign(carry_lo, lambda: (a.lo.v() + b.lo.v()).n // 2**128)
-    x.Assign(carry_hi, lambda: (a.hi.v() + b.hi.v()).n // 2**128)
+    x.Assign(carry_hi, lambda: (carry_lo.v() + a.hi.v() + b.hi.v()).n // 2**128)
 
     x.Eq(c.lo, a.lo + b.lo - carry_lo * 2**128)
     x.Eq(c.hi, carry_lo + a.hi + b.hi - carry_hi * 2**128)
     x.Assert(c.hi == 123)
-    x.Range(carry_lo, TypeCarry.t)
-    x.Range(carry_hi, TypeCarry.t)
+    x.Range(carry_lo, TypeCarry)
+    x.Range(carry_hi, TypeCarry)
 
     return x.Finalize()
 
@@ -222,8 +247,8 @@ def MulAddWord(x: Component) -> Component:
 
     # a64s = a.to_64bit_limbs(x)
     # b64s = b.to_64bit_limbs(x)
-    a64s = WordTo64BitLimbs(x, "a").Connect([a])
-    b64s = WordTo64BitLimbs(x, "b").Connect([b])
+    a64s = WordTo64BitLimbs(x, "a_64bits").Connect([a])
+    b64s = WordTo64BitLimbs(x, "b_64bits").Connect([b])
 
     TypeU132 = Type.Bound(0, 2**132-1)
     t0 = x.Eq(x.Signal(TypeU132), a64s[0] * b64s[0])
@@ -233,9 +258,11 @@ def MulAddWord(x: Component) -> Component:
 
     carry_lo = x.Signal(Type9B)
     carry_hi = x.Signal(Type9B)
+    x.Assign(carry_lo, lambda: (t0.v() + t1.v() * 2**64 + c.lo.v()).n // 2**128)
+    x.Assign(carry_hi, lambda: (carry_lo.v() + t2.v() + t3.v() * 2**64 + c.hi.v()).n // 2**128)
     # range check for carries
     x.Range(carry_lo, Type9B.t)
-    # x.Range(carry_hi, Type9B.t)
+    x.Range(carry_hi, Type9B.t)
     x.Eq(d.lo, t0 + t1 * 2**64 + c.lo - carry_lo * 2**128)
     x.Eq(d.hi, carry_lo + t2 + t3 * 2**64 + c.hi - carry_hi * 2**128)
     # x.Assert(d.lo + carry_lo * 2**128 == t0 + t1 * 2**64 + c.lo)
@@ -271,18 +298,25 @@ def test_muladd():
     x = Component.main()
 
     a = Word(x)
-    x.Range(a.lo, TypeU128.t)
-    x.Range(a.hi, TypeU128.t)
+    x.Range(a.lo, TypeU128)
+    x.Range(a.hi, TypeU128)
     b = Word(x)
-    x.Range(b.lo, TypeU128.t)
-    x.Range(b.hi, TypeU128.t)
+    x.Range(b.lo, TypeU128)
+    x.Range(b.hi, TypeU128)
     c = Word(x)
-    x.Range(c.lo, TypeU128.t)
-    x.Range(c.hi, TypeU128.t)
+    x.Range(c.lo, TypeU128)
+    x.Range(c.hi, TypeU128)
 
     mul_add_word = MulAddWord(x)
-    mul_add_word.type_check()
+    print()
+    # mul_add_word.type_check()
     [d, carry] = mul_add_word.Connect([a, b, c])
+    vars = mul_add_word.WitnessCalc([8, 1, 5, 0, 5, 6])
+    for signal_id, value_f in vars.var_map.items():
+        print(f"{x.com.signals[signal_id].fullname} = {value_f}")
+    for signal_id, value_b in vars.lvar_map.items():
+        print(f"{x.com.signals[signal_id].fullname} = {value_b}")
+    mul_add_word.Verify()
 
     # dump(x)
 
@@ -291,19 +325,19 @@ def test_add():
     x = Component.main()
 
     a = Word(x)
-    x.Range(a.lo, TypeU128.t)
-    x.Range(a.hi, TypeU128.t)
+    x.Range(a.lo, TypeU128)
+    x.Range(a.hi, TypeU128)
     b = Word(x)
-    x.Range(b.lo, TypeU128.t)
-    x.Range(b.hi, TypeU128.t)
+    x.Range(b.lo, TypeU128)
+    x.Range(b.hi, TypeU128)
 
     add_word = AddWord(x)
     print()
     # add_word.type_check()
     [c, carry] = add_word.Connect([a, b])
     vars = add_word.WitnessCalc([1, 2, 3, 4])
-    for signal_id, value in vars.var_map.items():
-        print(f"{x.com.signals[signal_id].fullname} = {value}")
-    for signal_id, value in vars.lvar_map.items():
-        print(f"{x.com.signals[signal_id].fullname} = {value}")
+    for signal_id, value_f in vars.var_map.items():
+        print(f"{x.com.signals[signal_id].fullname} = {value_f}")
+    for signal_id, value_b in vars.lvar_map.items():
+        print(f"{x.com.signals[signal_id].fullname} = {value_b}")
     add_word.Verify()

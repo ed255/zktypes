@@ -186,7 +186,7 @@ def test_component():
 
 
 def AddWord(x: Component) -> Component:
-    """c = a + b"""
+    """c, carry = a + b % 2**256"""
     x = x.Sub("addWord")
     a = x.In(Word(x))
     b = x.In(Word(x))
@@ -196,11 +196,12 @@ def AddWord(x: Component) -> Component:
     carry_lo = x.Signal(TypeCarry)
     carry_hi = x.Out(x.Signal(TypeCarry))
 
-    x.Assign(carry_lo, lambda: (a.lo.v().n + b.lo.v().n) // 2**128)
-    x.Assign(carry_hi, lambda: (a.hi.v().n + b.hi.v().n) // 2**128)
+    x.Assign(carry_lo, lambda: (a.lo.v() + b.lo.v()).n // 2**128)
+    x.Assign(carry_hi, lambda: (a.hi.v() + b.hi.v()).n // 2**128)
 
     x.Eq(c.lo, a.lo + b.lo - carry_lo * 2**128)
     x.Eq(c.hi, carry_lo + a.hi + b.hi - carry_hi * 2**128)
+    x.Assert(c.hi == 123)
     x.Range(carry_lo, TypeCarry.t)
     x.Range(carry_hi, TypeCarry.t)
 
@@ -305,3 +306,4 @@ def test_add():
         print(f"{x.com.signals[signal_id].fullname} = {value}")
     for signal_id, value in vars.lvar_map.items():
         print(f"{x.com.signals[signal_id].fullname} = {value}")
+    add_word.Verify()

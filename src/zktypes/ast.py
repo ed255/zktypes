@@ -27,10 +27,10 @@ class SupportsVars(Protocol):
 
 
 class SupportsEval(Protocol):
-    def var_eval(self, Any) -> F:
+    def var_eval(self, Signal) -> F:
         ...
 
-    def lvar_eval(self, Any) -> bool:
+    def lvar_eval(self, Signal) -> bool:
         ...
 
 
@@ -312,7 +312,7 @@ class AExpr:
             case Const(c):
                 return c
             case AVar(v, _):
-                return vars.var_eval(v)
+                return vars.var_eval(v.deref())
             case Sum(es):
                 return sum([e.eval(vars) for e in es], start=F(0))
             case Mul(es):
@@ -628,11 +628,11 @@ ToLExpr = LExpr | LVar
 
 @dataclass
 class RangeCheck:
-    e: AVar
+    var: AVar
     bound: StaticBound
 
     def __str__(self) -> str:
-        return f"{self.e.fmt_ascii()} in {self.bound}"
+        return f"{self.var.fmt_ascii()} in {self.bound}"
 
 
 @dataclass
@@ -665,8 +665,8 @@ class Assert:
                 return a.verify(vars)
             case LExpr(_) as e:
                 return e.eval(vars)
-            case RangeCheck(_v, bound):
-                v: F = vars.var_eval(_v)
+            case RangeCheck(var, bound):
+                v: F = vars.var_eval(var.signal())
                 assert len(bound.intervals) == 1
                 interval = bound.intervals[0]
                 return interval[0] <= v.n and v.n <= interval[1]
@@ -996,7 +996,7 @@ class ComponentState(Enum):
     STARTED = auto()
     FINALIZED = auto()
     CONNECTED = auto()
-
+    WITNESS_ASSIGNED = auto()
 
 
 @dataclass
@@ -1042,12 +1042,14 @@ class Vars:
             self.var_map[signal.id] = value
 
     def var_eval(self, signal: Signal) -> F:
+        assert not signal.logical
         try:
             return self.var_map[signal.id]
         except KeyError:
             raise VarNotFoundError(signal.id)
 
     def lvar_eval(self, signal: Signal) -> bool:
+        assert signal.logical
         try:
             return self.lvar_map[signal.id]
         except KeyError:
@@ -1116,11 +1118,11 @@ class Component:
 
     def asserts_iter(self, all: bool = False) -> Iterator[Assert]:
         if all:
-            for assert_id in self.assert_ids:
-                yield self.com.asserts[assert_id]
-        else:
             for a in self.com.asserts:
                 yield a
+        else:
+            for assert_id in self.assert_ids:
+                yield self.com.asserts[assert_id]
 
     def unique_name(self, name: str, names: Dict[str, int]) -> str:
         sufix = ""
@@ -1218,10 +1220,10 @@ class Component:
 
     def Connect(self, inputs: List[InputOutput]) -> List[Any]:
         assert self.state == ComponentState.FINALIZED
+        self.state = ComponentState.CONNECTED
         assert len(inputs) == len(self.inputs)
         for (i, parent_input) in enumerate(inputs):
             assert isinstance(parent_input, type(self.inputs[i]))
-        self.state = ComponentState.CONNECTED
         self.parent_inputs = inputs
         assert self.parent is not None
         self.parent.assignments.append(Assignment(AssignmentComponent(self)))
@@ -1231,6 +1233,8 @@ class Component:
         self.assignments.append(Assignment(AssignmentManual(var.signal().id, fn)))
 
     def _witness_calc(self):
+        assert self.state == ComponentState.CONNECTED
+        self.state = ComponentState.WITNESS_ASSIGNED
         # print(f"DBG {self.assignments}")
         for assignment in self.assignments:
             match assignment.a:
@@ -1295,13 +1299,28 @@ class Component:
         for child in self.children:
             child.walk(fn)
 
-    # def verify(self, inputs: List[int | F]):
-    #     vars = {}
-    #     for (i, signal) in enumerate(self.input_signals_iter()):
-    #         vars[signal.id] = inputs[i]
-    #     for child in self.children:
-    #         child.walk(fn)
-    #     fn(self)
+    def Verify(self):
+        assert self.state == ComponentState.WITNESS_ASSIGNED
+        for a in self.asserts_iter():
+            try:
+                if not a.verify(self.com.vars):
+                    print(f"AssertNotSatisfied {a.s}")
+                    if a.frame is not None:
+                        if a.frame.code_context is not None:
+                            code = '\n'.join(a.frame.code_context)
+                            print(f"> {a.frame.filename}:{a.frame.lineno}\n{code}")
+                    for var in a.vars():
+                        signal = var.deref()
+                        print(f" - {signal.fullname} = {self.com.vars.eval(signal)}")
+            except VarNotFoundError as e:
+                print(f"VarNotFound {self.com.signals[e.v].fullname} in")
+                if a.frame is not None:
+                    if a.frame.code_context is not None:
+                        code = '\n'.join(a.frame.code_context)
+                        print(f"> {a.frame.filename}:{a.frame.lineno}\n{code}")
+                raise e
+        for sub in self.children:
+            sub.Verify()
 
 
     def type_check(self):

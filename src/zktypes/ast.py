@@ -11,13 +11,10 @@ from dataclasses import dataclass, field
 from py_ecc import bn128
 from typing import (
     List,
-    Union,
     Optional,
     Callable,
     Any,
-    Self,
     TypeVar,
-    Generic,
     Tuple,
     Dict,
     Iterator,
@@ -65,17 +62,6 @@ def i_fmt_ascii(c: int) -> str:
         return f"{sign}0x{c:02x}"
     else:
         return f"{c}"
-
-
-@dataclass
-class StrVar:
-    s: str
-
-    def __hash__(self):
-        return self.s.__hash__()
-
-    def fmt_ascii(self) -> str:
-        return self.s
 
 
 @dataclass
@@ -1201,8 +1187,10 @@ class Component:
         self._push_assert(a)
         return a
 
-    def Assert(self, s: Cond | LExpr) -> Assert:
+    def Assert(self, s: Cond | LExpr | LVar) -> Assert:
         assert self.state == ComponentState.STARTED
+        if isinstance(s, LVar):
+            s = LExpr(s)
         a = Assert(s, frame=inspect.stack()[1])
         self._push_assert(a)
         return a

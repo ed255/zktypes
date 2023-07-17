@@ -1,24 +1,19 @@
 from zktypes.ast import (
-    AExpr,
     AVar,
     F,
     Cond,
     If,
     IfElse,
     Assert,
-    StrVar,
     Component,
-    LExpr,
     Type,
     LVar,
-    io_list,
     graph,
     dump,
-    Signal,
     Vars,
 )
 from varname import varname  # type: ignore
-from typing import Optional, Tuple, List, Any
+from typing import Optional, List
 
 x = Component.main()
 
@@ -218,6 +213,7 @@ def test_component():
     [res, _] = Add256(x).Connect([word_a, word_b])
     x.Assert((res.lo == 1) & (res.hi == 1))
 
+    dump(x)
     graph(x)
 
 

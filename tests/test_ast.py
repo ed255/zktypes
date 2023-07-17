@@ -191,7 +191,7 @@ Type9B = Type.Bound(0, F(2 ** (9 * 8) - 1))
 TypeAny = Type.Any()
 
 
-def test_component():
+def example_component() -> Component:
     x = Component.main()
     a = x.Signal()
     b = x.Signal()
@@ -212,8 +212,18 @@ def test_component():
     x.Range(word_b.hi, TypeU128)
     [res, _] = Add256(x).Connect([word_a, word_b])
     x.Assert((res.lo == 1) & (res.hi == 1))
+    return x
+
+
+def test_component_dump():
+    x = example_component()
 
     dump(x)
+
+
+def test_component_graph():
+    x = example_component()
+
     graph(x)
 
 

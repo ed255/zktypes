@@ -228,7 +228,7 @@ def test_component_graph():
 
 
 def AddWord(x: Component) -> Component:
-    """c, carry = a + b % 2**256"""
+    """c, carry = a + b mod 2**256"""
     x = x.Sub("addWord")
     a = x.In(Word(x))
     b = x.In(Word(x))
@@ -243,7 +243,7 @@ def AddWord(x: Component) -> Component:
 
     x.Eq(c.lo, a.lo + b.lo - carry_lo * 2**128)
     x.Eq(c.hi, carry_lo + a.hi + b.hi - carry_hi * 2**128)
-    x.Assert(c.hi == 123)
+    x.Assert(c.hi + 1 == 123)
     x.Range(carry_lo, TypeCarry)
     x.Range(carry_hi, TypeCarry)
 
@@ -251,7 +251,7 @@ def AddWord(x: Component) -> Component:
 
 
 def MulAddWord(x: Component) -> Component:
-    """d = a * b + c"""
+    """d, has_overflow = a * b + c mod 2**256"""
     x = x.Sub("mulAddWord")
 
     a = x.In(Word(x))
@@ -262,8 +262,6 @@ def MulAddWord(x: Component) -> Component:
     x.Range(d.hi, TypeU128.t)
     has_overflow = x.Out(x.LSignal())
 
-    # a64s = a.to_64bit_limbs(x)
-    # b64s = b.to_64bit_limbs(x)
     a64s = WordTo64BitLimbs(x, "a_64bits").Connect([a])
     b64s = WordTo64BitLimbs(x, "b_64bits").Connect([b])
 
@@ -281,12 +279,10 @@ def MulAddWord(x: Component) -> Component:
     x.Assign(carry_lo, lambda: (t0.v() + t1.v() * 2**64 + c.lo.v()).n // 2**128)
     x.Assign(carry_hi, lambda: (carry_lo.v() + t2.v() + t3.v() * 2**64 + c.hi.v()).n // 2**128)
     # range check for carries
-    x.Range(carry_lo, Type9B.t)
-    x.Range(carry_hi, Type9B.t)
+    x.Range(carry_lo, Type9B)
+    x.Range(carry_hi, Type9B)
     x.Eq(d.lo, t0 + t1 * 2**64 + c.lo - carry_lo * 2**128)
     x.Eq(d.hi, carry_lo + t2 + t3 * 2**64 + c.hi - carry_hi * 2**128)
-    # x.Assert(d.lo + carry_lo * 2**128 == t0 + t1 * 2**64 + c.lo)
-    # x.Assert(d.hi + carry_hi * 2**128 == carry_lo + t2 + t3 * 2**64 + c.hi)
 
     overflow = x.Eq(
         x.Signal(),
@@ -300,15 +296,59 @@ def MulAddWord(x: Component) -> Component:
     )
     x.Eq(has_overflow, overflow != 0)
 
-    # x.Assert(t0 + t1 * (2**64) + c.lo == d.lo + carry_lo * (2**128))
-    # x.Assert(t2 + t3 * (2**64) + c.hi + carry_lo == d.hi + carry_hi * (2**128))
+    return x.Finalize()
+
+
+def Lt(x: Component, n_bits: int) -> Component:
+    """lt = lhs < rhs"""
+    x = x.Sub("lt")
+
+    TypeNBits = Type.Bound(0, 2**n_bits - 1)
+    lhs = x.In(x.Signal(TypeNBits))
+    rhs = x.In(x.Signal(TypeNBits))
+    lt = x.Out(x.LSignal())
+    diff = x.Signal(TypeNBits)
+    x.Range(diff, TypeNBits)
+
+    max_open = 2**n_bits
+    # x.Assert(lhs - rhs == diff - (lt * max_open))
+    x.Assign(lt, lambda: lhs.v().n < rhs.v().n)
+    x.Assert(x.IfElse(lt, diff == (lhs - rhs) + max_open, diff == lhs - rhs))
 
     return x.Finalize()
+
+
+def print_vars(x: Component, vars: Vars):
+    print("# Vars")
+    for signal_id, value_f in vars.var_map.items():
+        print(f"{x.com.signals[signal_id].fullname} = {value_f}")
+    for signal_id, value_b in vars.lvar_map.items():
+        print(f"{x.com.signals[signal_id].fullname} = {value_b}")
+
+
+def test_lt():
+    x = Component.main()
+
+    n_bits = 32
+    TypeNBits = Type.Bound(0, 2**n_bits - 1)
+    lhs = x.Signal(TypeNBits)
+    rhs = x.Signal(TypeNBits)
+    x.Range(lhs, TypeNBits)
+    x.Range(rhs, TypeNBits)
+    lt_component = Lt(x, n_bits)
+    [lt] = lt_component.Connect([lhs, rhs])
+    lt_component.type_check()
+
+    vars = lt_component.WitnessCalc([1234, 5678])
+    print_vars(x, vars)
+    lt_component.Verify()
 
 
 def MulModWord(x: Component) -> Component:
     """r = (a * b) mod n"""
     x = x.Sub("mulModWord")
+
+    # TODO
 
     return x.Finalize()
 
@@ -328,13 +368,10 @@ def test_muladd():
 
     mul_add_word = MulAddWord(x)
     print()
-    # mul_add_word.type_check()
+    mul_add_word.type_check()
     [d, carry] = mul_add_word.Connect([a, b, c])
     vars = mul_add_word.WitnessCalc([8, 1, 5, 0, 5, 6])
-    for signal_id, value_f in vars.var_map.items():
-        print(f"{x.com.signals[signal_id].fullname} = {value_f}")
-    for signal_id, value_b in vars.lvar_map.items():
-        print(f"{x.com.signals[signal_id].fullname} = {value_b}")
+    print_vars(x, vars)
     mul_add_word.Verify()
 
     # dump(x)
@@ -355,8 +392,5 @@ def test_add():
     # add_word.type_check()
     [c, carry] = add_word.Connect([a, b])
     vars = add_word.WitnessCalc([1, 2, 3, 4])
-    for signal_id, value_f in vars.var_map.items():
-        print(f"{x.com.signals[signal_id].fullname} = {value_f}")
-    for signal_id, value_b in vars.lvar_map.items():
-        print(f"{x.com.signals[signal_id].fullname} = {value_b}")
+    print_vars(x, vars)
     add_word.Verify()

@@ -22,6 +22,7 @@ from typing import (
 from typing_extensions import Protocol
 import inspect
 
+# F(-1) = 0x30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd46
 F = bn128.FQ
 
 
@@ -982,8 +983,13 @@ class AssignmentComponent:
     component: Component
 
 
+# @dataclass
+# class AssignmentEq:
+#     assert_id: int
+
+
 @dataclass
-class AssignmentEq:
+class AssignmentAssert:
     assert_id: int
 
 
@@ -995,7 +1001,7 @@ class AssignmentManual:
 
 @dataclass
 class Assignment:
-    a: AssignmentComponent | AssignmentEq | AssignmentManual
+    a: AssignmentComponent | AssignmentAssert | AssignmentManual
 
 
 @dataclass
@@ -1020,8 +1026,10 @@ class Vars:
             if isinstance(value, int):
                 value = F(value)
             assert isinstance(value, F)
-            if signal.id in self.var_map:
-                raise ValueError(f"Signal {signal.fullname} already assigned")
+            if signal.id in self.var_map and self.var_map[signal.id] != value:
+                raise ValueError(
+                    f"Signal {signal.fullname} already assigned with {self.var_map[signal.id]}"
+                )
             self.var_map[signal.id] = value
 
     def var_eval(self, signal: Signal) -> F:
@@ -1162,19 +1170,42 @@ class Component:
         self.com.asserts.append(a)
         self.assert_ids.append(id)
 
-    SignalType = TypeVar("SignalType", AVar, LVar)
+    def _assert_assign(self, a: Assert):
+        try:
+            match a.s:
+                case LExpr(Eq(AExprPair(lhs, rhs))) | LExpr(Eq(LExprPair(lhs, rhs))):
+                    assert (isinstance(lhs, AExpr) and isinstance(rhs, AExpr)) or (
+                        isinstance(lhs, LExpr) and isinstance(rhs, LExpr)
+                    )
+                    signal = lhs.as_var()
+                    if signal is not None:
+                        rhs_eval = rhs.eval(self.com.vars)
+                        self.com.vars.set(signal, rhs_eval)
+                case Cond(If(cond, true_e)):
+                    if cond.eval(self.com.vars):
+                        self._assert_assign(true_e)
+                case Cond(IfElse(cond, true_e, false_e)):
+                    if cond.eval(self.com.vars):
+                        self._assert_assign(true_e)
+                        return
+                    else:
+                        self._assert_assign(false_e)
+                        return
+                case _:
+                    raise ValueError
+                    rhs_eval = rhs.eval(self.com.vars)
+        except VarNotFoundError as e:
+            print(f'VarNotFound {e.signal.fullname} in "{rhs}"')
+            if a.frame is not None:
+                if a.frame.code_context is not None:
+                    code = "\n".join(a.frame.code_context)
+                    print(f"> {a.frame.filename}:{a.frame.lineno}\n{code}")
+            raise e
 
-    def Eq(self, signal: SignalType, e: AExpr | LExpr) -> SignalType:
-        assert self.state == ComponentState.STARTED
-        if isinstance(signal, AVar):
-            assert isinstance(e, AExpr)
-            a = Assert(signal == e, frame=inspect.stack()[1])
-        elif isinstance(signal, LVar):
-            assert isinstance(e, LExpr)
-            a = Assert(signal == e, frame=inspect.stack()[1])
-        self._push_assert(a)
-        self.assignments.append(Assignment(AssignmentEq(a.id)))
-        return signal
+    def Assign(self, var: AVar | LVar, fn: Callable[[], F | int | bool]):
+        self.assignments.append(Assignment(AssignmentManual(var.signal(), fn)))
+
+    SignalType = TypeVar("SignalType", AVar, LVar)
 
     def Range(self, var: AVar, bound: Type | StaticBound) -> Assert:
         assert self.state == ComponentState.STARTED
@@ -1193,14 +1224,29 @@ class Component:
             s = LExpr(s)
         a = Assert(s, frame=inspect.stack()[1])
         self._push_assert(a)
+        self.assignments.append(Assignment(AssignmentAssert(a.id)))
         return a
 
-    def If(self, cond: LExpr, true_e: Cond | LExpr) -> Cond:
+    def Eq(self, signal: SignalType, e: AExpr | LExpr) -> SignalType:
+        if isinstance(signal, AVar):
+            assert isinstance(e, AExpr)
+            s = signal == e
+        elif isinstance(signal, LVar):
+            assert isinstance(e, LExpr)
+            s = signal == e
+        self.Assert(s)
+        return signal
+
+    def If(self, cond: LExpr | LVar, true_e: Cond | LExpr) -> Cond:
         assert self.state == ComponentState.STARTED
+        if isinstance(cond, LVar):
+            cond = LExpr(cond)
         return Cond(If(cond, Assert(true_e)))
 
-    def IfElse(self, cond: LExpr, true_e: Cond | LExpr, false_e: Cond | LExpr) -> Cond:
+    def IfElse(self, cond: LExpr | LVar, true_e: Cond | LExpr, false_e: Cond | LExpr) -> Cond:
         assert self.state == ComponentState.STARTED
+        if isinstance(cond, LVar):
+            cond = LExpr(cond)
         return Cond(IfElse(cond, Assert(true_e), Assert(false_e)))
 
     def Finalize(self) -> Component:
@@ -1219,40 +1265,15 @@ class Component:
         self.parent.assignments.append(Assignment(AssignmentComponent(self)))
         return self.outputs
 
-    def Assign(self, var: AVar, fn: Callable[[], F | int]):
-        self.assignments.append(Assignment(AssignmentManual(var.signal(), fn)))
-
     def _witness_calc(self):
         assert self.state == ComponentState.CONNECTED
         self.state = ComponentState.WITNESS_ASSIGNED
         # print(f"DBG {self.assignments}")
         for assignment in self.assignments:
             match assignment.a:
-                case AssignmentEq(assert_id):
+                case AssignmentAssert(assert_id):
                     a = self.com.asserts[assert_id]
-                    lhs: Any = None
-                    rhs: Any = None
-                    match a.s:
-                        case LExpr(Eq(AExprPair(_lhs, _rhs))):
-                            (lhs, rhs) = (_lhs, _rhs)
-                        case LExpr(Eq(LExprPair(_lhs, _rhs))):
-                            (lhs, rhs) = (_lhs, _rhs)
-                        case _:
-                            raise ValueError
-                    signal = lhs.as_var()
-                    if signal is not None:
-                        try:
-                            rhs_eval = rhs.eval(self.com.vars)
-                        except VarNotFoundError as e:
-                            print(f'VarNotFound {e.signal.fullname} in "{rhs}"')
-                            if a.frame is not None:
-                                if a.frame.code_context is not None:
-                                    code = "\n".join(a.frame.code_context)
-                                    print(f"> {a.frame.filename}:{a.frame.lineno}\n{code}")
-                            raise e
-                        self.com.vars.set(signal, rhs_eval)
-                    else:
-                        raise ValueError
+                    self._assert_assign(a)
                 case AssignmentComponent(component):
                     # print(f"DBG AssignComponent {component.fullname}")
                     for signal_parent, signal_child in zip(
@@ -1273,7 +1294,7 @@ class Component:
                     try:
                         signal_value_ = fn()
                         # print(f"DBG manual assignment of {signal.fullname} = {signal_value_}")
-                        if isinstance(signal_value_, int):
+                        if type(signal_value_) is int:
                             signal_value_ = F(signal_value_)
                         self.com.vars.set(signal, signal_value_)
                     except VarNotFoundError as e:
